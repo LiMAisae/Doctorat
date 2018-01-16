@@ -503,23 +503,9 @@ endif
 
 if (nbrcpl.gt.0) call cscloc
 
-!===============================================================================
-! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
-!      SOIT VARIABLES AU COURS DU TEMPS
-!      SOIT VARIABLES LORS D'UNE REPRISE DE CALCUL
-!        (VISCOSITES ET MASSE VOLUMIQUE)
-!===============================================================================
 
-if (vcopt_u%iwarni.ge.1) then
-  write(nfecra,1010)
-endif
 
-call phyvar(nvar, nscal, dt)
 
-if (itrale.gt.0) then
-  iappel = 2
-  call schtmp(nscal, iappel)
-endif
 
 
 ! REMPLISSAGE DES COEFS DE PDC
@@ -594,48 +580,7 @@ endif
 !-- change (gas phase to liquid phase)
 !------------------------------------------------------------------------
 
-if (nftcdt.gt.0) then
 
-  iappel = 3
-
-  ! Condensation source terms arrays initialized
-  do ii = 1, nfbpcd
-    do ivar = 1, nvar
-      itypcd(ii,ivar) = 0
-      spcond(ii,ivar) = 0.d0
-      hpcond(ii)      = 0.d0
-    enddo
-  enddo
-
-  call cs_user_boundary_mass_source_terms &
-( nvar   , nscal  ,                                              &
-  nfbpcd , iappel ,                                              &
-  ifbpcd , itypcd , izftcd ,                                     &
-  spcond , tpar)
-
-  if (nzones.eq.1) then
-    do ii = 1, nfbpcd
-      iz = izzftcd(ii)
-      zrob  (iz) = rob
-      zcondb(iz) = condb
-      zcpb  (iz) = cpb
-      zhext (iz) = hext
-      ztext (iz) = text
-      ztpar (iz) = tpar
-    enddo
-  endif
-
-  ! Empiric laws used by COPAIN condensation model to
-  ! the computation of the condensation source term and
-  ! exchange coefficient of the heat transfer imposed
-  ! as boundary condition.
-
-  call condensation_copain_model &
-( nvar   , nfbpcd , ifbpcd , izzftcd ,                           &
-  tpar   ,                                                       &
-  spcond , hpcond )
-
-endif
 
 !----------------------------------------------------------
 !-- Fill the condensation arrays (svcond) for the sink term
@@ -644,45 +589,6 @@ endif
 !-- condensation modelling.
 !----------------------------------------------------------
 
-if (icondv.eq.0) then
-
-  !-- Condensation source terms arrays initialized
-  do iel = 1, ncelet
-    ltmast(iel) = 0
-    itypst(iel, ivar) = 0
-    svcond(iel, ivar) = 0.d0
-    flxmst(iel) = 0.d0
-  enddo
-
-  call cs_user_metal_structures_source_terms &
-( nvar   , nscal  ,                                              &
-  ncmast , ltmast,                                               &
-  itypst , izmast ,                                              &
-  svcond , tmet)
-
-  ! Condensation model to compute the sink source term
-  ! (svcond) and the  heat transfer flux (flxmst) imposed
-  ! in the cells associated to the metal  structures
-  ! volume where this phenomenon occurs.
-
-  call metal_structures_copain_model &
-( ncmast , ltmast ,                                          &
-  tmet   ,                                                   &
-  svcond(:, ipr)  , flxmst )
-
-  ! array initialization if the metal structures
-  ! condensation model is coupled with
-  ! a 0-D thermal model
-  ! FIXME add restart file later
-  if (itagms.eq.1) then
-    do icmst = 1, ncmast
-      iel = ltmast(icmst)
-      t_metal(iel,1) = tmet0
-      t_metal(iel,2) = tmet0
-    enddo
-  endif
-
-endif
 
 !===============================================================================
 ! 7.bis Current to previous for variables and GWF module
@@ -900,7 +806,6 @@ endif
 do while (iterns.le.nterup)
 
   call precli(nvar, icodcl, rcodcl)
-
   !     - Interface Code_Saturne
   !       ======================
 
@@ -953,6 +858,7 @@ do while (iterns.le.nterup)
     rcodcl )
 
   call user_boundary_conditions(nvar, itypfb, icodcl, rcodcl)
+    
 
   !     - Interface Code_Saturne
   !       ======================
@@ -1047,6 +953,7 @@ do while (iterns.le.nterup)
     endif
 
   endif
+ 
 
   !     UNE FOIS CERTAINS CODES DE CONDITIONS LIMITES INITIALISES PAR
   !     L'UTILISATEUR, ON PEUT COMPLETER CES CODES PAR LES COUPLAGES
@@ -1340,7 +1247,56 @@ do while (iterns.le.nterup)
 
   ! En cas de champ de vitesse fige, on ne boucle pas sur U/P
   if (iccvfg.eq.0) then
+!===============================================================================
+! 15.  RESOLUTION DES SCALAIRES
+!===============================================================================
 
+if (nscal.ge.1 .and. iirayo.gt.0) then
+
+  if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
+    write(nfecra,1070)
+  endif
+
+  call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
+                             dt, cp2fol, cp2ch, ichcor)
+endif
+
+if (nscal.ge.1) then
+
+  if(vcopt_u%iwarni.ge.1) then
+    write(nfecra,1060)
+  endif
+
+  call scalai                                                     &
+ ( nvar   , nscal  ,                                              &
+   dt     )
+
+  ! Diffusion terms for weakly compressible algorithm
+  if (idilat.ge.4) then
+    call diffst(nscal)
+  endif
+
+endif
+
+! Free memory
+
+
+!===============================================================================
+! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
+!      SOIT VARIABLES AU COURS DU TEMPS
+!      SOIT VARIABLES LORS D'UNE REPRISE DE CALCUL
+!        (VISCOSITES ET MASSE VOLUMIQUE)
+!===============================================================================
+if (vcopt_u%iwarni.ge.1) then
+  write(nfecra,1010)
+endif
+
+call phyvar(nvar, nscal, dt)
+
+if (itrale.gt.0) then
+  iappel = 2
+  call schtmp(nscal, iappel)
+endif
 !===============================================================================
 ! 12. RESOLUTION QUANTITE DE MOUVEMENT ET MASSE
 !===============================================================================
@@ -1442,8 +1398,10 @@ do while (iterns.le.nterup)
     endif
 
   endif ! Fin si calcul sur champ de vitesse figee
+  
 
   iterns = iterns + 1
+
 
 enddo
 
@@ -1458,69 +1416,7 @@ enddo
 ! Moreover, we need an update of the boundary
 ! conditions in the cases where they vary in time.
 
-if (ippmod(idarcy).eq.1) then
 
-  call precli(nvar, icodcl, rcodcl)
-
-  if (iihmpr.eq.1) then
-
-  ! N.B. Zones de face de bord : on utilise provisoirement les zones des
-  !    physiques particulieres, meme sans physique particuliere
-  !    -> sera modifie lors de la restructuration des zones de bord
-
-    call uiclim &
-  ( ippmod(idarcy),                                                &
-    nozppm, ncharm, ncharb, nclpch,                                &
-    iqimp,  icalke, ientat, ientcp, inmoxy, ientox,                &
-    ientfu, ientgb, ientgf, iprofm,                                &
-    itypfb, izfppp, icodcl,                                        &
-    surfbo, cdgfbo,                                                &
-    qimp,   qimpat, qimpcp, dh,     xintur,                        &
-    timpat, timpcp, tkent ,  fment, distch, nvar, rcodcl)
-
-    if (ippmod(iphpar).eq.0) then
-
-    ! ON NE FAIT PAS DE LA PHYSIQUE PARTICULIERE
-
-      nbzfmx = nbzppm
-      nozfmx = nozppm
-      allocate(ilzfbr(nbzfmx))
-      allocate(qcalc(nozfmx))
-
-      call stdtcl &
-    ( nbzfmx , nozfmx ,                                              &
-      iqimp  , icalke , qimp   , dh , xintur,                        &
-      itypfb , izfppp , ilzfbr ,                                     &
-      rcodcl , qcalc  )
-
-      ! Free memory
-      deallocate(ilzfbr)
-      deallocate(qcalc)
-
-    endif
-
-  endif
-
-  call cs_f_user_boundary_conditions &
-  ( nvar   , nscal  ,                                              &
-    icodcl , itrifb , itypfb , izfppp ,                            &
-    dt     ,                                                       &
-    rcodcl )
-
-  call user_boundary_conditions(nvar, itypfb, icodcl, rcodcl)
-
-  ! For internal coupling, set itypfb to wall function by default
-  ! if not set by the user
-  call cs_internal_coupling_bcs(itypfb)
-
-  call condli &
-   ( nvar   , nscal  , iterns ,                                    &
-     isvhb  ,                                                      &
-     icodcl , isostd ,                                             &
-     dt     , rcodcl ,                                             &
-     visvdr , hbord  , theipb )
-
-endif
 
 ! Free memory
 if (allocated(hbord)) deallocate(hbord)
@@ -1706,42 +1602,10 @@ endif  ! Fin si calcul sur champ de vitesse fige SUITE
 
 !     Ici on peut liberer les eventuels tableaux SKW et DIVUKW
 
-!===============================================================================
-! 15.  RESOLUTION DES SCALAIRES
-!===============================================================================
 
-if (nscal.ge.1 .and. iirayo.gt.0) then
-
-  if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
-    write(nfecra,1070)
-  endif
-
-  call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
-                             dt, cp2fol, cp2ch, ichcor)
-endif
-
-if (nscal.ge.1) then
-
-  if(vcopt_u%iwarni.ge.1) then
-    write(nfecra,1060)
-  endif
-
-  call scalai                                                     &
- ( nvar   , nscal  ,                                              &
-   dt     )
-
-  ! Diffusion terms for weakly compressible algorithm
-  if (idilat.ge.4) then
-    call diffst(nscal)
-  endif
-
-endif
-
-! Free memory
 deallocate(icodcl, rcodcl)
 
 deallocate(isostd)
-
 !===============================================================================
 ! 16.  TRAITEMENT DU FLUX DE MASSE, DE LA VISCOSITE,
 !      DE LA MASSE VOLUMIQUE ET DE LA CHALEUR SPECIFIQUE POUR
@@ -1752,22 +1616,6 @@ deallocate(isostd)
 iappel = 5
 call schtmp(nscal, iappel)
 
-!===============================================================================
-! Update flow through fans
-!===============================================================================
-
-n_fans = cs_fan_n_fans()
-if (n_fans .gt. 0) then
-  call field_get_key_int(ivarfl(iu), kimasf, iflmas)
-  call field_get_key_int(ivarfl(iu), kbmasf, iflmab)
-  call field_get_val_s(iflmas, i_mass_flux)
-  call field_get_val_s(iflmab, b_mass_flux)
-  call field_get_val_s(icrom, crom)
-  call field_get_val_s(ibrom, brom)
-  call debvtl(i_mass_flux, b_mass_flux, crom, brom)
-endif
-
-!===============================================================================
 
 !--------
 ! FORMATS
