@@ -1340,7 +1340,41 @@ do while (iterns.le.nterup)
 
   ! En cas de champ de vitesse fige, on ne boucle pas sur U/P
   if (iccvfg.eq.0) then
+!===============================================================================
+! 15.  RESOLUTION DES SCALAIRES
+!===============================================================================
 
+if (nscal.ge.1 .and. iirayo.gt.0) then
+
+  if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
+    write(nfecra,1070)
+  endif
+
+  call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
+                             dt, cp2fol, cp2ch, ichcor)
+endif
+
+if (nscal.ge.1) then
+
+  if(vcopt_u%iwarni.ge.1) then
+    write(nfecra,1060)
+  endif
+
+  call scalai                                                     &
+ ( nvar   , nscal  ,                                              &
+   dt     )
+
+  ! Diffusion terms for weakly compressible algorithm
+  if (idilat.ge.4) then
+    call diffst(nscal)
+  endif
+
+endif
+
+! Free memory
+deallocate(icodcl, rcodcl)
+
+deallocate(isostd)
 !===============================================================================
 ! 12. RESOLUTION QUANTITE DE MOUVEMENT ET MASSE
 !===============================================================================
@@ -1706,41 +1740,7 @@ endif  ! Fin si calcul sur champ de vitesse fige SUITE
 
 !     Ici on peut liberer les eventuels tableaux SKW et DIVUKW
 
-!===============================================================================
-! 15.  RESOLUTION DES SCALAIRES
-!===============================================================================
 
-if (nscal.ge.1 .and. iirayo.gt.0) then
-
-  if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
-    write(nfecra,1070)
-  endif
-
-  call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
-                             dt, cp2fol, cp2ch, ichcor)
-endif
-
-if (nscal.ge.1) then
-
-  if(vcopt_u%iwarni.ge.1) then
-    write(nfecra,1060)
-  endif
-
-  call scalai                                                     &
- ( nvar   , nscal  ,                                              &
-   dt     )
-
-  ! Diffusion terms for weakly compressible algorithm
-  if (idilat.ge.4) then
-    call diffst(nscal)
-  endif
-
-endif
-
-! Free memory
-deallocate(icodcl, rcodcl)
-
-deallocate(isostd)
 
 !===============================================================================
 ! 16.  TRAITEMENT DU FLUX DE MASSE, DE LA VISCOSITE,
