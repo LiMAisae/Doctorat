@@ -259,8 +259,7 @@ allocate(res(ncelet), presa(ncelet), divu(ncelet))
 allocate(rhs(ncelet), rovsdt(ncelet))
 allocate(iflux(nfac), bflux(ndimfb))
 iswdyp = vcopt_p%iswdyn
-if (iswdyp.ge.1) allocate(adxk(ncelet), adxkm1(ncelet),   &
-                          dpvarm1(ncelet), rhs0(ncelet))
+
 if (icalhy.eq.1) allocate(frchy(ndim,ncelet),             &
                           dfrchy(ndim,ncelet), hydro_pres(ncelet))
 
@@ -275,16 +274,6 @@ if (vcopt_p%idften.eq.6)  vitenp => tpucou(:,:)
 iflid = ivarfl(ipr)
 call field_get_key_struct_solving_info(iflid, sinfo)
 
-if (vcopt_p%iwgrec.eq.1) then
-  ! Id weighting field for gradient
-  call field_get_key_int(iflid, kwgrec, iflwgr)
-  call field_get_dim(iflwgr, f_dim)
-  if (f_dim.gt.1) then
-    call field_get_val_v(iflwgr, cpro_wgrec_v)
-  else
-    call field_get_val_s(iflwgr, cpro_wgrec_s)
-  endif
-endif
 
 ! --- Writing
 call field_get_name(ivarfl(ipr), chaine)
@@ -323,199 +312,16 @@ endif
 ! Matrix block size
 ibsize = 1
 iesize = 1
-
 ! Initialization dedicated to VOF algo.
-if (ivofmt.ge.0) then
-  ! The pressure correction is done through the volumetric flux (that is
-  ! the convective flux of the void fraction), not the mass flux
-  call field_get_key_int(ivarfl(ivolf2), kimasf, iflmas)
-  call field_get_key_int(ivarfl(ivolf2), kbmasf, iflmab)
-  call field_get_val_s(iflmas, imasfl)
-  call field_get_val_s(iflmab, bmasfl)
-endif
+
 
 ! Calculation of dt/rho
-if (ivofmt.ge.0.or.idilat.eq.4) then
 
-  ! Allocate and initialize specific arrays
-  allocate(xunsro(ncelet))
-  do iel = 1, ncel
-    xunsro(iel) = 1.d0/crom(iel)
-  enddo
-  call synsca(xunsro)
-
-  if (vcopt_p%idften.eq.1) then
-    allocate(xdtsro(ncelet))
-    do iel = 1, ncel
-      xdtsro(iel) = dt(iel)/crom(iel)
-    enddo
-    call synsca(xdtsro)
-  elseif (vcopt_p%idften.eq.6) then
-    allocate(tpusro(6,ncelet))
-    do iel = 1, ncel
-      tpusro(1,iel) = vitenp(1,iel)*xunsro(iel)
-      tpusro(2,iel) = vitenp(2,iel)*xunsro(iel)
-      tpusro(3,iel) = vitenp(3,iel)*xunsro(iel)
-      tpusro(4,iel) = vitenp(4,iel)*xunsro(iel)
-      tpusro(5,iel) = vitenp(5,iel)*xunsro(iel)
-      tpusro(6,iel) = vitenp(6,iel)*xunsro(iel)
-    enddo
-    call syntis(tpusro)
-  endif
-
-  ! Associate pointers to pressure diffusion coefficient
-  viscap => xdtsro(:)
-  if (vcopt_p%idften.eq.6)  vitenp => tpusro(:,:)
-
-endif
 
 !===============================================================================
 ! 2. Norm residual
 !===============================================================================
 
-if (irnpnw.ne.1) then
-
-  if (iphydr.eq.1) then
-    do iel = 1, ncel
-      unsvom = -1.d0/volume(iel)
-      trav(1,iel) = trav(1,iel)*unsvom + frcxt(1 ,iel) + dfrcxt(1 ,iel)
-      trav(2,iel) = trav(2,iel)*unsvom + frcxt(2 ,iel) + dfrcxt(2 ,iel)
-      trav(3,iel) = trav(3,iel)*unsvom + frcxt(3 ,iel) + dfrcxt(3 ,iel)
-    enddo
-  else
-    if (isno2t.gt.0 .and. nterup.gt.1) then
-      do iel = 1, ncel
-        unsvom = -1.d0/volume(iel)
-        romro0 = crom(iel)-ro0
-        trav(1,iel) = (trav(1,iel)+trava(1,iel))*unsvom + romro0*gx
-        trav(2,iel) = (trav(2,iel)+trava(2,iel))*unsvom + romro0*gy
-        trav(3,iel) = (trav(3,iel)+trava(3,iel))*unsvom + romro0*gz
-      enddo
-    else
-      do iel = 1, ncel
-        unsvom = -1.d0/volume(iel)
-        romro0 = crom(iel)-ro0
-        trav(1,iel) = trav(1,iel)*unsvom + romro0*gx
-        trav(2,iel) = trav(2,iel)*unsvom + romro0*gy
-        trav(3,iel) = trav(3,iel)*unsvom + romro0*gz
-      enddo
-    endif
-  endif
-  do iel = 1, ncel
-    dtsrom = dt(iel)/crom(iel)
-    do isou = 1, 3
-      trav(isou,iel) = vel(isou,iel) +dtsrom*trav(isou,iel)
-    enddo
-  enddo
-
-! ---> TRAITEMENT DU PARALLELISME ET DE LA PERIODICITE
-
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(trav)
-    !==========
-  endif
-
-
-! ON NE RECONSTRUIT PAS POUR GAGNER DU TEMPS
-!   EPSRGR N'EST DONC PAS UTILISE
-
-  init   = 1
-  inc    = 1
-  iflmb0 = 1
-  if (iale.eq.1.or.imobil.eq.1) iflmb0 = 0
-  nswrgp = 1
-  imligp = vcopt_u%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_u%epsrgr
-  climgp = vcopt_u%climgr
-  itypfl = 1
-  if (idilat.ge.4.or.ivofmt.ge.0) itypfl = 0
-
-  call inimav &
-  !==========
- ( f_id0  , itypfl ,                                              &
-   iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-   iwarnp ,                                                       &
-   epsrgp , climgp ,                                              &
-   crom, brom   ,                                                 &
-   trav   ,                                                       &
-   coefav , coefbv ,                                              &
-   iflux  , bflux  )
-
-  init = 1
-  call divmas(init, iflux, bflux, res)
-
-  ! --- Weakly compressible algorithm: semi analytic scheme
-  if (idilat.ge.4) then
-    do iel = 1, ncel
-      res(iel) = res(iel)*crom(iel)
-    enddo
-  endif
-
-  ! --- Volumic Gamma source term adding for volumic mass flow rate
-  if (ncesmp.gt.0) then
-    do ii = 1, ncesmp
-      iel = icetsm(ii)
-      res(iel) = res(iel) - cell_f_vol(iel)*smacel(ii,ipr)
-    enddo
-  endif
-
-  ! --- Surface Gamma source term adding for surface condensation modelling
-  if (nfbpcd.gt.0) then
-    do ii = 1, nfbpcd
-      ifac= ifbpcd(ii)
-      iel = ifabor(ifac)
-      res(iel) = res(iel) - surfbn(ifac)*spcond(ii,ipr)
-    enddo
-  endif
-
-  ! --- volume Gamma source term adding for volume condensation modelling
-  if (icondv.eq.0) then
-    allocate(surfbm(ncelet))
-    surfbm(:) = 0.d0
-
-    do ii = 1, ncmast
-      iel= ltmast(ii)
-      surfbm(iel) = s_metal*volume(iel)/voltot
-      res(iel) = res(iel) - surfbm(iel)*svcond(iel,ipr)
-    enddo
-
-    deallocate(surfbm)
-  endif
-
-
-  ! Cavitation source term
-  if (icavit.gt.0) then
-    do iel = 1, ncel
-      res(iel) = res(iel) -cell_f_vol(iel)*gamcav(iel)*(1.d0/rho2 - 1.d0/rho1)
-    enddo
-  endif
-
-! ---> LAGRANGIEN : COUPLAGE RETOUR
-
-  if (iilagr.eq.2 .and. ltsmas.eq.1) then
-
-    do iel = 1, ncel
-      res(iel) = res(iel) -tslagr(iel,itsmas)
-    enddo
-
-  endif
-
-  rnormp = sqrt(cs_gdot(ncel,res,res))
-
-  if(vcopt_p%iwarni.ge.2) then
-    write(nfecra,1300)chaine(1:16) ,rnormp
-  endif
-  sinfo%nbivar = 0
-
-else
-
-  if(vcopt_p%iwarni.ge.2) then
-    write(nfecra,1300)chaine(1:16) ,rnormp
-  endif
-  sinfo%nbivar = 0
-
-endif
 
 !===============================================================================
 ! 3. Compute a approximated pressure increment if needed
@@ -535,138 +341,16 @@ do ifac = 1, nfabor
   coefbf_dp(ifac) = coefbf_p(ifac)
   bflux(ifac) = 0.d0
 enddo
-
+print*, "iphydr, icalhy", iphydr, icalhy
 ! Compute a pseudo hydrostatic pressure increment stored
 ! in hydro_pres(.) with Homogeneous Neumann BCs everywhere
-if (iphydr.eq.1.and.icalhy.eq.1) then
-
-  ifcsor = isostd(nfabor+1)
-  if (irangp.ge.0) then
-    call parcmx (ifcsor)
-  endif
-
-  ! This computation is needed only if there are outlet faces
-  if (ifcsor.le.0) then
-    indhyd = 0
-  else
-
-    ! Work arrays for BCs
-    allocate(coefap(ndimfb), cofafp(ndimfb))
-    allocate(coefbp(ndimfb), cofbfp(ndimfb))
-
-    do ifac = 1, nfabor
-
-      iel = ifabor(ifac)
-
-      if (vcopt_p%idften.eq.1) then
-        hint = dt(iel)/distb(ifac)
-      ! Symmetric tensor diffusivity
-      elseif (vcopt_p%idften.eq.6) then
-
-        visci(1,1) = vitenp(1,iel)
-        visci(2,2) = vitenp(2,iel)
-        visci(3,3) = vitenp(3,iel)
-        visci(1,2) = vitenp(4,iel)
-        visci(2,1) = vitenp(4,iel)
-        visci(2,3) = vitenp(5,iel)
-        visci(3,2) = vitenp(5,iel)
-        visci(1,3) = vitenp(6,iel)
-        visci(3,1) = vitenp(6,iel)
-
-        ! ||Ki.S||^2
-        viscis = ( visci(1,1)*surfbo(1,ifac)       &
-                 + visci(1,2)*surfbo(2,ifac)       &
-                 + visci(1,3)*surfbo(3,ifac))**2   &
-               + ( visci(2,1)*surfbo(1,ifac)       &
-                 + visci(2,2)*surfbo(2,ifac)       &
-                 + visci(2,3)*surfbo(3,ifac))**2   &
-               + ( visci(3,1)*surfbo(1,ifac)       &
-                 + visci(3,2)*surfbo(2,ifac)       &
-                 + visci(3,3)*surfbo(3,ifac))**2
-
-        ! IF.Ki.S
-        fikis = ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,1)   &
-                + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,1)   &
-                + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,1)   &
-                )*surfbo(1,ifac)                              &
-              + ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,2)   &
-                + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,2)   &
-                + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,2)   &
-                )*surfbo(2,ifac)                              &
-              + ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,3)   &
-                + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,3)   &
-                + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,3)   &
-                )*surfbo(3,ifac)
-
-        distfi = distb(ifac)
-
-        ! Take I" so that I"F= eps*||FI||*Ki.n when J" is in cell rji
-        ! NB: eps =1.d-1 must be consistent with vitens.f90
-        fikis = max(fikis, 1.d-1*sqrt(viscis)*distfi)
-
-        hint = viscis/surfbn(ifac)/fikis
-
-      endif
-
-      ! LOCAL Neumann Boundary Conditions on the hydrostatic pressure
-      !--------------------------------------------------------------
-
-      qimp = 0.d0
-
-      call set_neumann_scalar &
-           !==================
-         ( coefap(ifac), cofafp(ifac),             &
-           coefbp(ifac), cofbfp(ifac),             &
-           qimp        , hint )
-
-    enddo
-
-    ! External forces containing bouyancy force ONLY
-    do iel = 1, ncel
-      dronm1 = (croma(iel)-ro0)
-      drom   = (crom(iel)-ro0)
-      frchy(1,iel)  = dronm1*gx
-      frchy(2,iel)  = dronm1*gy
-      frchy(3,iel)  = dronm1*gz
-      dfrchy(1,iel) = drom  *gx - frchy(1,iel)
-      dfrchy(2,iel) = drom  *gy - frchy(2,iel)
-      dfrchy(3,iel) = drom  *gz - frchy(3,iel)
-    enddo
-
-    ! Parallelism and periodicity treatment
-    if (irangp.ge.0.or.iperio.eq.1) then
-      call synvin(frchy)
-      call synvin(dfrchy)
-    endif
-
-    call calhyd &
-    !==========
-    ( indhyd ,                                &
-      frchy  , dfrchy ,                       &
-      hydro_pres      , iflux  , bflux ,      &
-      coefap , coefbp ,                       &
-      cofafp , cofbfp ,                       &
-      viscf  , viscb  ,                       &
-      dam    , xam    ,                       &
-      dpvar  , rhs    )
-
-    ! Free memory
-    deallocate(coefap, cofafp)
-    deallocate(coefbp, cofbfp)
-
-  endif
-
-else
-
-  indhyd = 0
-
-endif
 
 ! Compute the BCs for the pressure increment
 ! (first we set the BCs of a standard pressure increment,
 !  that are (A = 0, B_dp = B_p) for the gradient BCs
 !  Then the A_dp is set thank to the pre-computed hydrostatic pressure
 !  so that the pressure increment will be 0 on the reference outlet face.
+print*, "iifren", iifren
 if (iphydr.eq.1.or.iifren.eq.1) then
 
 
@@ -707,51 +391,7 @@ if (iphydr.eq.1.or.iifren.eq.1) then
           hint = dt(iel)/distb(ifac)
 
         ! Symmetric tensor diffusivity
-        elseif (vcopt_p%idften.eq.6) then
-
-          visci(1,1) = vitenp(1,iel)
-          visci(2,2) = vitenp(2,iel)
-          visci(3,3) = vitenp(3,iel)
-          visci(1,2) = vitenp(4,iel)
-          visci(2,1) = vitenp(4,iel)
-          visci(2,3) = vitenp(5,iel)
-          visci(3,2) = vitenp(5,iel)
-          visci(1,3) = vitenp(6,iel)
-          visci(3,1) = vitenp(6,iel)
-
-          ! ||Ki.S||^2
-          viscis = ( visci(1,1)*surfbo(1,ifac)       &
-                   + visci(1,2)*surfbo(2,ifac)       &
-                   + visci(1,3)*surfbo(3,ifac))**2   &
-                 + ( visci(2,1)*surfbo(1,ifac)       &
-                   + visci(2,2)*surfbo(2,ifac)       &
-                   + visci(2,3)*surfbo(3,ifac))**2   &
-                 + ( visci(3,1)*surfbo(1,ifac)       &
-                   + visci(3,2)*surfbo(2,ifac)       &
-                   + visci(3,3)*surfbo(3,ifac))**2
-
-          ! IF.Ki.S
-          fikis = ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,1)   &
-                  + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,1)   &
-                  + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,1)   &
-                  )*surfbo(1,ifac)                              &
-                + ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,2)   &
-                  + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,2)   &
-                  + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,2)   &
-                  )*surfbo(2,ifac)                              &
-                + ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,3)   &
-                  + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,3)   &
-                  + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,3)   &
-                  )*surfbo(3,ifac)
-
-          distfi = distb(ifac)
-
-          ! Take I" so that I"F= eps*||FI||*Ki.n when J" is in cell rji
-          ! NB: eps =1.d-1 must be consistent with vitens.f90
-          fikis = max(fikis, 1.d-1*sqrt(viscis)*distfi)
-
-          hint = viscis/surfbn(ifac)/fikis
-
+        
         endif
 
         ! Free entrance boundary face (Bernoulli condition to link the pressure
@@ -806,23 +446,14 @@ do iel = 1, ncel
   rovsdt(iel) = 0.d0
 enddo
 ! Implicit part of the cavitation source
-if (icavit.gt.0.and.itscvi.eq.1) then
-  do iel = 1, ncel
-    rovsdt(iel) = rovsdt(iel) - cell_f_vol(iel)*dgdpca(iel)*(1.d0/rho2 - 1.d0/rho1)
-  enddo
-endif
+
 ! Strengthen the diagonal for Low Mach Algorithm
-if (idilat.eq.3) then
-  do iel = 1, ncel
-    rovsdt(iel) = rovsdt(iel) + epsdp*cell_f_vol(iel)/dt(iel)
-  enddo
-endif
 
 ! ---> Face diffusivity
 if (vcopt_p%idiff.ge.1) then
 
   ! Scalar diffusivity
-  if (vcopt_p%idften.eq.1) then
+ 
 
     if (ivofmt.ge.0) then
       imvisp = 1  ! VOF algorithm: continuity of the flux across internal faces
@@ -845,31 +476,6 @@ if (vcopt_p%idiff.ge.1) then
     endif
 
   ! Tensor diffusivity
-  else if (vcopt_p%idften.eq.6) then
-
-    ! Allocate temporary arrays
-    allocate(weighf(2,nfac))
-    allocate(weighb(ndimfb))
-
-    iwarnp = vcopt_p%iwarni
-
-    call vitens &
-    !==========
-   ( vitenp , iwarnp ,             &
-     weighf , weighb ,             &
-     viscf  , viscb  )
-
-    if (vcopt_p%iwgrec.eq.1) then
-      ! Weighting for gradient
-      do iel = 1, ncel
-        do isou = 1, 6
-          cpro_wgrec_v(isou,iel) = vitenp(isou,iel)
-        enddo
-      enddo
-      call syntis(cpro_wgrec_v)
-    endif
-
-  endif
 
 else
 
@@ -940,83 +546,17 @@ do iel = 1, ncelet
   enddo
 enddo
 
-if (iphydr.eq.1) then
-  do iel = 1, ncel
-    trav(1,iel) = trav(1,iel) - frcxt(1 ,iel)
-    trav(2,iel) = trav(2,iel) - frcxt(2 ,iel)
-    trav(3,iel) = trav(3,iel) - frcxt(3 ,iel)
-  enddo
-endif
-
-! --- Weakly compressible algorithm: semi analytic scheme
-!     The RHS contains rho div(u*) and not div(rho u*)
-!     so this term will be add afterwards
-if (idilat.ge.4) then
-  if (vcopt_p%idften.eq.1) then
-    do iel = 1, ncel
-      ardtsr  = arak*(dt(iel)/crom(iel))
-      do isou = 1, 3
-        trav(isou,iel) = ardtsr*trav(isou,iel)
-      enddo
-    enddo
-  else if (vcopt_p%idften.eq.6) then
-    do iel = 1, ncel
-      arsr  = arak/crom(iel)
-
-      trav(1,iel) = arsr*(                                 &
-                           vitenp(1,iel)*(trav(1,iel))     &
-                         + vitenp(4,iel)*(trav(2,iel))     &
-                         + vitenp(6,iel)*(trav(3,iel))     &
-                         )
-      trav(2,iel) = arsr*(                                 &
-                           vitenp(4,iel)*(trav(1,iel))     &
-                         + vitenp(2,iel)*(trav(2,iel))     &
-                         + vitenp(5,iel)*(trav(3,iel))     &
-                         )
-      trav(3,iel) = arsr*(                                 &
-                           vitenp(6,iel)*(trav(1,iel))     &
-                         + vitenp(5,iel)*(trav(2,iel))     &
-                         + vitenp(3,iel)*(trav(3,iel))     &
-                         )
-
-    enddo
-  endif
 
 ! Standard algorithm
-else
-  if (vcopt_p%idften.eq.1) then
+
+  
     do iel = 1, ncel
       ardtsr  = arak*(dt(iel)/crom(iel))
       do isou = 1, 3
         trav(isou,iel) = vel(isou,iel) + ardtsr*trav(isou,iel)
       enddo
     enddo
-  else if (vcopt_p%idften.eq.6) then
-    do iel = 1, ncel
-      arsr  = arak/crom(iel)
 
-      trav(1,iel) = vel(1,iel)                             &
-                  + arsr*(                                 &
-                           vitenp(1,iel)*(trav(1,iel))     &
-                         + vitenp(4,iel)*(trav(2,iel))     &
-                         + vitenp(6,iel)*(trav(3,iel))     &
-                         )
-      trav(2,iel) = vel(2,iel)                             &
-                  + arsr*(                                 &
-                           vitenp(4,iel)*(trav(1,iel))     &
-                         + vitenp(2,iel)*(trav(2,iel))     &
-                         + vitenp(5,iel)*(trav(3,iel))     &
-                         )
-      trav(3,iel) = vel(3,iel)                             &
-                  + arsr*(                                 &
-                           vitenp(6,iel)*(trav(1,iel))     &
-                         + vitenp(5,iel)*(trav(2,iel))     &
-                         + vitenp(3,iel)*(trav(3,iel))     &
-                         )
-
-    enddo
-  endif
-endif
 
 ! ---> Traitement du parallelisme et de la periodicite
 
@@ -1027,7 +567,6 @@ endif
 init   = 1
 inc    = 1
 ! BCs will be taken into account after in idilat>=4
-if (idilat.ge.4) inc = 0
 iflmb0 = 1
 if (iale.eq.1.or.imobil.eq.1) iflmb0 = 0
 nswrgp = vcopt_u%nswrgr
@@ -1036,7 +575,7 @@ iwarnp = vcopt_p%iwarni
 epsrgp = vcopt_u%epsrgr
 climgp = vcopt_u%climgr
 itypfl = 1
-if (ivofmt.ge.0.or.idilat.eq.4) itypfl = 0
+
 
 call inimav &
 !==========
@@ -1074,19 +613,6 @@ if (iphydr.eq.1) then
    viscf  , viscb  ,                                              &
    dt     , dt     , dt     )
 
-  ! Tensor diffusivity
-  else if (vcopt_p%idften.eq.6) then
-
-    call projtv &
-    !==========
-  ( init   , nswrgp , ircflp ,                                     &
-    dfrcxt ,                                                       &
-    coefbf_p ,                                                     &
-    viscf  , viscb  ,                                              &
-    vitenp ,                                                       &
-    weighf ,                                                       &
-    imasfl , bmasfl )
-
   endif
 endif
 
@@ -1097,6 +623,7 @@ iccocg = 1
 !----------------------
 ! Rhie and Choow filter
 !----------------------
+
 if (arak.gt.0.d0) then
 
 ! --- Prise en compte de Arak : la viscosite face est multipliee
@@ -1121,7 +648,6 @@ if (arak.gt.0.d0) then
 
   ! Scalar diffusivity
   !-------------------
-  if (vcopt_p%idften.eq.1) then
     do iel = 1, ncel
       viscap(iel) = arak*viscap(iel)
     enddo
@@ -1183,81 +709,6 @@ if (arak.gt.0.d0) then
 
   ! Tensor diffusivity
   !-------------------
-  else if (vcopt_p%idften.eq.6) then
-
-    do iel = 1, ncel
-      vitenp(1,iel) = arak*vitenp(1,iel)
-      vitenp(2,iel) = arak*vitenp(2,iel)
-      vitenp(3,iel) = arak*vitenp(3,iel)
-      vitenp(4,iel) = arak*vitenp(4,iel)
-      vitenp(5,iel) = arak*vitenp(5,iel)
-      vitenp(6,iel) = arak*vitenp(6,iel)
-    enddo
-
-    nswrgp = vcopt_p%nswrgr
-    imligp = vcopt_p%imligr
-    iwarnp = vcopt_p%iwarni
-    epsrgp = vcopt_p%epsrgr
-    climgp = vcopt_p%climgr
-    extrap = vcopt_p%extrag
-    ircflp = vcopt_p%ircflu
-
-    call itrmav &
-    !==========
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-   iphydr , 0      , iwarnp ,                                              &
-   epsrgp , climgp , extrap ,                                              &
-   frcxt  ,                                                                &
-   cvara_pr,                                                               &
-   coefa_p , coefb_p , coefaf_p , coefbf_p ,                               &
-   viscf  , viscb  ,                                                       &
-   vitenp ,                                                                &
-   weighf , weighb ,                                                       &
-   imasfl , bmasfl )
-
-    ! Projection du terme source pour oter la partie hydrostat de la pression
-    if (iphydr.eq.1) then
-      init   = 0
-      inc    = 0
-      nswrgp = vcopt_p%nswrgr
-      imligp = vcopt_p%imligr
-      iwarnp = vcopt_p%iwarni
-      epsrgp = vcopt_p%epsrgr
-      climgp = vcopt_p%climgr
-
-      ! A 0 boundary coefficient coefbf_dp is passed to projtv
-      ! to cancel boundary terms
-      allocate(cofbfp(ndimfb))
-      do ifac = 1, nfabor
-        cofbfp(ifac) = 0.d0
-      enddo
-
-      call projtv &
-      !==========
-   ( init   , nswrgp , ircflp ,                                     &
-     frcxt  ,                                                       &
-     cofbfp ,                                                       &
-     viscf  , viscb  ,                                              &
-     vitenp ,                                                       &
-     weighf ,                                                       &
-     imasfl, bmasfl )
-
-      deallocate(cofbfp)
-
-    endif
-
-    ! --- Correction du pas de temps
-    unsara = 1.d0/arak
-    do iel = 1, ncel
-      vitenp(1,iel) = unsara*vitenp(1,iel)
-      vitenp(2,iel) = unsara*vitenp(2,iel)
-      vitenp(3,iel) = unsara*vitenp(3,iel)
-      vitenp(4,iel) = unsara*vitenp(4,iel)
-      vitenp(5,iel) = unsara*vitenp(5,iel)
-      vitenp(6,iel) = unsara*vitenp(6,iel)
-    enddo
-
-  endif
 
   ! --- Correction de la viscosite aux faces
   do ifac = 1, nfac
@@ -1269,47 +720,7 @@ if (arak.gt.0.d0) then
 
   ! If Saturne/Saturne coupling, re-set the boundary face viscosity to
   ! the non-zero value
-  if (nbrcpl.gt.0) then
-    if (vcopt_p%idiff.ge.1) then
-
-      !Scalar diffusivity
-      if (vcopt_p%idften.eq.1) then
-
-        if (ivofmt.lt.0) then
-          imvisp = imvisf
-        else
-          imvisp = 1
-        endif
-
-        call viscfa &
-        !==========
-      ( imvisp ,            &
-        viscap ,            &
-        viscf  , viscb  )
-
-      ! Tensor diffusivity
-      else if (vcopt_p%idften.eq.6) then
-
-        iwarnp = vcopt_p%iwarni
-
-        call vitens &
-        !==========
-       ( vitenp , iwarnp ,             &
-         weighf , weighb ,             &
-         viscf  , viscb  )
-
-      endif
-    else
-      do ifac = 1, nfac
-        viscf(ifac) = 0.d0
-      enddo
-      do ifac = 1, nfabor
-        viscb(ifac) = 0.d0
-      enddo
-    endif
-
-  endif
-
+  
 endif
 
 !===============================================================================
@@ -1330,7 +741,7 @@ do iel = 1, ncel
 enddo
 
 relaxp = vcopt_p%relaxv
-
+print*, "relaxp", relaxp
 ! --- Initial divergence
 init = 1
 
@@ -1341,120 +752,13 @@ call divmas(init, imasfl , bmasfl , divu)
 !     2. Add dilatation source term to rhs
 !     3. The mass flux is completed by rho u* . S
 
-if (idilat.ge.4) then
-
-  call field_get_val_s(iustdy(itsrho), cpro_tsrho)
-
-  allocate(velflx(nfac), velflb(ndimfb))
-
-  ! 1. The RHS contains rho div(u*) and not div(rho u*)
-  init   = 1
-  inc    = 1
-  iflmb0 = 1
-  if (iale.eq.1.or.imobil.eq.1) iflmb0 = 0
-  nswrgp = vcopt_u%nswrgr
-  imligp = vcopt_u%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_u%epsrgr
-  climgp = vcopt_u%climgr
-
-  itypfl = 0
-
-  call inimav &
-  !==========
- ( ivarfl(iu)      , itypfl ,                                     &
-   iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-   iwarnp ,                                                       &
-   epsrgp , climgp ,                                              &
-   crom, brom   ,                                                 &
-   vel    ,                                                       &
-   coefav , coefbv ,                                              &
-   velflx , velflb )
-
-  call divmas(init, velflx , velflb , res)
-
-  if (idilat.eq.4) then
-    do iel = 1, ncel
-      divu(iel) = divu(iel) + res(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      divu(iel) = divu(iel) + res(iel)*crom(iel)
-    enddo
-  endif
-
-  ! 2. Add the dilatation source term D(rho)/Dt
-  if (idilat.eq.4) then
-    do iel = 1, ncel
-      divu(iel) = divu(iel) &
-                + cpro_tsrho(iel)/crom(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      divu(iel) = divu(iel) + cpro_tsrho(iel)
-    enddo
-  endif
-
-  ! 3. The mass flux is completed by u*.S (idilat=4)
-  !                                  rho u* . S (idilat=5)
-  init   = 0
-  inc    = 1
-  iflmb0 = 1
-  if (iale.eq.1.or.imobil.eq.1) iflmb0 = 0
-  nswrgp = vcopt_u%nswrgr
-  imligp = vcopt_u%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_u%epsrgr
-  climgp = vcopt_u%climgr
-
-  itypfl = 1
-  if (idilat.eq.4) itypfl = 0
-
-  call inimav &
-  !==========
- ( ivarfl(iu)      , itypfl ,                                     &
-   iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-   iwarnp ,                                                       &
-   epsrgp , climgp ,                                              &
-   crom, brom   ,                                                 &
-   vel    ,                                                       &
-   coefav , coefbv ,                                              &
-   imasfl , bmasfl )
-
-endif
 
 ! --- Masse source terms adding for volumic flow rate
-if (ncesmp.gt.0) then
-  do ii = 1, ncesmp
-    iel = icetsm(ii)
-    divu(iel) = divu(iel) -cell_f_vol(iel)*smacel(ii,ipr)
-  enddo
-endif
 
 ! --- Source term adding for condensation modelling
-if (nfbpcd.gt.0) then
-  do ii = 1, nfbpcd
-    ifac= ifbpcd(ii)
-    iel = ifabor(ifac)
-    divu(iel) = divu(iel) - surfbn(ifac)*spcond(ii,ipr)
-  enddo
-endif
 
 ! --- volume Gamma source for metal mass structures
 !     condensation modelling
-if (icondv.eq.0) then
-  allocate(surfbm(ncelet))
-  surfbm(:) = 0.d0
-
-  do ii = 1, ncmast
-    iel= ltmast(ii)
-    surfbm(iel) = s_metal*volume(iel)/voltot
-    res(iel) = res(iel) - surfbm(iel)*svcond(iel,ipr)
-  enddo
-
-  deallocate(surfbm)
-endif
-
 
 ! --- Source term associated to the mass aggregation
 if (idilat.eq.2.or.idilat.eq.3) then
@@ -1465,18 +769,8 @@ if (idilat.eq.2.or.idilat.eq.3) then
 endif
 
 ! ---> Termes sources Lagrangien
-if (iilagr.eq.2 .and. ltsmas.eq.1) then
-  do iel = 1, ncel
-    divu(iel) = divu(iel) -tslagr(iel,itsmas)
-  enddo
-endif
 
 ! --- Cavitation source term
-if (icavit.gt.0) then
-  do iel = 1, ncel
-    divu(iel) = divu(iel) - cell_f_vol(iel)*gamcav(iel)*(1.d0/rho2 - 1.d0/rho1)
-  enddo
-endif
 
 ! --- Initial right hand side
 do iel = 1, ncel
@@ -1505,64 +799,6 @@ endif
 
 ! Dynamic relaxation initialization
 !----------------------------------
-if (iswdyp.ge.1) then
-
-  do iel = 1, ncelet
-    adxkm1(iel) = 0.d0
-    adxk(iel) = 0.d0
-  enddo
-
-  ! ||A.dx^0||^2 = 0
-  nadxk = 0.d0
-
-  rnorm2 = rnormp**2
-
-  iccocg = 1
-  init = 1
-  inc  = 0
-  if (iphydr.eq.1.or.iifren.eq.1) inc = 1
-  nswrgp = vcopt_p%nswrgr
-  imligp = vcopt_p%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  extrap = vcopt_p%extrag
-  ircflp = vcopt_p%ircflu
-
-  if (vcopt_p%idften.eq.1) then
-
-    call itrgrp &
-    !==========
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , iphydr ,     &
-   iwarnp ,                                                                    &
-   epsrgp , climgp , extrap ,                                                  &
-   dfrcxt ,                                                                    &
-   dpvar  ,                                                                    &
-   coefa_dp  , coefb_dp  ,                                                     &
-   coefaf_dp , coefbf_dp ,                                                     &
-   viscf  , viscb  ,                                                           &
-   viscap ,                                                                    &
-   rhs0   )
-
-  else if (vcopt_p%idften.eq.6) then
-
-    call itrgrv &
-    !==========
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-   iphydr , iwarnp ,                                                       &
-   epsrgp , climgp , extrap ,                                              &
-   dfrcxt ,                                                                &
-   dpvar  ,                                                                &
-   coefa_dp  , coefb_dp  ,                                                 &
-   coefaf_dp , coefbf_dp ,                                                 &
-   viscf  , viscb  ,                                                       &
-   vitenp ,                                                                &
-   weighf , weighb ,                                                       &
-   rhs0   )
-
-  endif
-
-endif
 
 ! Reconstruction loop (beginning)
 !--------------------------------
@@ -1573,11 +809,6 @@ do while (isweep.le.nswmpr.and.residu.gt.vcopt_p%epsrsm*rnormp)
   !-------------------------------
   if (iswdyp.eq.0) then
     do iel = 1, ncel
-      dpvar(iel) = 0.d0
-    enddo
-  else
-    do iel = 1, ncel
-      dpvarm1(iel) = dpvar(iel)
       dpvar(iel) = 0.d0
     enddo
   endif
@@ -1598,115 +829,7 @@ do while (isweep.le.nswmpr.and.residu.gt.vcopt_p%epsrsm*rnormp)
 
   ! Dynamic relaxation of the system
   !---------------------------------
-  if (iswdyp.ge.1) then
-
-    ! Computation of the variable ralaxation coefficient
-
-    !$omp parallel do
-    do iel = 1, ncelet
-      adxkm1(iel) = adxk(iel)
-      adxk(iel) = - rhs0(iel)
-    enddo
-
-    iccocg = 1
-    init = 0
-    inc  = 0
-    if (iphydr.eq.1.or.iifren.eq.1) inc = 1
-    nswrgp = vcopt_p%nswrgr
-    imligp = vcopt_p%imligr
-    iwarnp = vcopt_p%iwarni
-    epsrgp = vcopt_p%epsrgr
-    climgp = vcopt_p%climgr
-    extrap = vcopt_p%extrag
-
-    if (vcopt_p%idften.eq.1) then
-
-      call itrgrp &
-      !==========
-   ( f_id0           , init   , inc    , imrgra ,              &
-     iccocg , nswrgp , imligp , iphydr ,                       &
-     iwarnp ,                                                  &
-     epsrgp , climgp , extrap ,                                &
-     dfrcxt ,                                                  &
-     dpvar  ,                                                  &
-     coefa_dp  , coefb_dp  ,                                   &
-     coefaf_dp , coefbf_dp ,                                   &
-     viscf  , viscb  ,                                         &
-     viscap ,                                                  &
-     adxk   )
-
-    else if (vcopt_p%idften.eq.6) then
-
-      call itrgrv &
-      !==========
-   ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-     iphydr , iwarnp ,                                                       &
-     epsrgp , climgp , extrap ,                                              &
-     dfrcxt ,                                                                &
-     dpvar  ,                                                                &
-     coefa_dp  , coefb_dp  ,                                                 &
-     coefaf_dp , coefbf_dp ,                                                 &
-     viscf  , viscb  ,                                                       &
-     vitenp ,                                                                &
-     weighf , weighb ,                                                       &
-     adxk   )
-
-    endif
-
-    do iel = 1, ncel
-      adxk(iel) = - adxk(iel)
-    enddo
-
-    ! ||E.dx^(k-1)-E.0||^2
-    nadxkm1 = nadxk
-
-    ! ||E.dx^k-E.0||^2
-    nadxk = cs_gdot(ncel, adxk, adxk)
-
-    ! < E.dx^k-E.0; r^k >
-    paxkrk = cs_gdot(ncel, rhs, adxk)
-
-    ! Relaxation with respect to dx^k and dx^(k-1)
-    if (iswdyp.ge.2) then
-
-      ! < E.dx^(k-1)-E.0; r^k >
-      paxm1rk = cs_gdot(ncel, rhs, adxkm1)
-
-      ! < E.dx^(k-1)-E.0; E.dx^k -E.0 >
-      paxm1ax = cs_gdot(ncel, adxk, adxkm1)
-
-      if (nadxkm1.gt.1.d-30*rnorm2.and.                    &
-         (nadxk*nadxkm1-paxm1ax**2).gt.1.d-30*rnorm2) then
-        beta = (paxkrk*paxm1ax - nadxk*paxm1rk)/(nadxk*nadxkm1-paxm1ax**2)
-      else
-        beta = 0.d0
-      endif
-
-    else
-      beta = 0.d0
-      paxm1ax = 1.d0
-      paxm1rk = 0.d0
-      paxm1ax = 0.d0
-    endif
-
-    ! The first sweep is not relaxed
-    if (isweep.eq.1) then
-      alph = 1.d0
-      beta = 0.d0
-    elseif (isweep.eq.2) then
-      beta = 0.d0
-      alph = -paxkrk/max(nadxk, 1.d-30*rnorm2)
-    else
-      alph = -(paxkrk + beta*paxm1ax)/max(nadxk, 1.d-30*rnorm2)
-    endif
-
-    ! Writing
-    if (iwarnp.ge.2) then
-      write(nfecra,1200) chaine(1:16), isweep, alph, beta, &
-                         paxkrk, nadxk, paxm1rk, nadxkm1, paxm1ax
-    endif
-
-  endif
+  
 
   ! Update the increment of pressure
   !---------------------------------
@@ -1724,16 +847,6 @@ do while (isweep.le.nswmpr.and.residu.gt.vcopt_p%epsrsm*rnormp)
         cvar_pr(iel) = presa(iel) + dpvar(iel)
       enddo
     endif
-  elseif (iswdyp.eq.1) then
-     do iel = 1, ncel
-      presa(iel) = cvar_pr(iel)
-      cvar_pr(iel) = presa(iel) + alph*dpvar(iel)
-    enddo
-  elseif (iswdyp.ge.2) then
-    do iel = 1, ncel
-      presa(iel) = cvar_pr(iel)
-      cvar_pr(iel) = presa(iel) + alph*dpvar(iel) + beta*dpvarm1(iel)
-    enddo
   endif
 
   ! --- Update the right hand side and update the residual
@@ -1766,21 +879,6 @@ do while (isweep.le.nswmpr.and.residu.gt.vcopt_p%epsrsm*rnormp)
    viscap ,                                                                    &
    rhs    )
 
-  else if (vcopt_p%idften.eq.6) then
-
-    call itrgrv &
-    !==========
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-   iphydr , iwarnp ,                                                       &
-   epsrgp , climgp , extrap ,                                              &
-   dfrcxt ,                                                                &
-   cvar_pr   ,                                                             &
-   coefa_dp  , coefb_dp  ,                                                 &
-   coefaf_dp , coefbf_dp ,                                                 &
-   viscf  , viscb  ,                                                       &
-   vitenp ,                                                                &
-   weighf , weighb ,                                                       &
-   rhs    )
 
   endif
 
@@ -1900,43 +998,6 @@ if (vcopt_p%idften.eq.1) then
    viscap ,                                                                    &
    imasfl , bmasfl )
 
-else if (vcopt_p%idften.eq.6) then
-
-  call itrmav &
-  !==========
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-   iphydr , 0      , iwarnp ,                                              &
-   epsrgp , climgp , extrap ,                                              &
-   dfrcxt ,                                                                &
-   presa  ,                                                                &
-   coefa_dp  , coefb_dp  ,                                                 &
-   coefaf_dp , coefbf_dp ,                                                 &
-   viscf  , viscb  ,                                                       &
-   vitenp ,                                                                &
-   weighf , weighb ,                                                       &
-   imasfl , bmasfl )
-
-  ! The last increment is not reconstructed to fullfill exactly the continuity
-  ! equation (see theory guide). The value of dfrcxt has no importance.
-  iccocg = 0
-  nswrgp = 0
-  inc = 0
-  ircflp = 0
-
-  call itrmav &
-  !==========
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-   iphydr , 0      , iwarnp ,                                              &
-   epsrgp , climgp , extrap ,                                              &
-   dfrcxt ,                                                                &
-   dpvar  ,                                                                &
-   coefa_dp  , coefb_dp  ,                                                 &
-   coefaf_dp , coefbf_dp ,                                                 &
-   viscf  , viscb  ,                                                       &
-   vitenp ,                                                                &
-   weighf , weighb ,                                                       &
-   imasfl , bmasfl )
-
 endif
 
 !===============================================================================
@@ -1950,351 +1011,6 @@ call sles_free_native(ivarfl(ipr), '')
 !    2nd step solving a convection diffusion equation
 !===============================================================================
 
-if (idilat.eq.5) then
-
-  ! Allocate temporary arrays
-  allocate(ddpvar(ncelet))
-  allocate(coefar(3,ndimfb), cofafr(3,ndimfb))
-  allocate(coefbr(3,3,ndimfb), cofbfr(3,3,ndimfb))
-
-  ! --- Convective flux: dt/rho grad(rho)
-  inc = 1
-  iccocg = 1
-  nswrgp = vcopt_u%nswrgr
-  imligp = vcopt_u%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_u%epsrgr
-  climgp = vcopt_u%climgr
-  extrap = vcopt_u%extrag
-
-  ! Dirichlet Boundary Condition on rho
-  !------------------------------------
-
-  allocate(coefa_rho(ndimfb), coefb_rho(ndimfb))
-
-  do ifac = 1, nfabor
-    coefa_rho(ifac) = brom(ifac)
-    coefb_rho(ifac) = 0.d0
-  enddo
-
-  call gradient_s                                                 &
-  (f_id0  , imrgra , inc    , iccocg , nswrgp , imligp , iwarnp , &
-   epsrgp , climgp , extrap ,                                     &
-   crom   ,                                                       &
-   coefa_rho       , coefb_rho       ,                            &
-   gradp  )
-
-  deallocate(coefa_rho, coefb_rho)
-
-  ! --- dt/rho * grad rho
-  do iel = 1, ncel
-    do isou = 1, 3
-      trav(isou,iel) = gradp(isou,iel) * dt(iel) / crom(iel)
-    enddo
-  enddo
-
-  ! --- (dt/rho * grad rho) . S
-
-  init   = 1
-  inc    = 1
-  iflmb0 = 1
-  if (iale.eq.1.or.imobil.eq.1) iflmb0 = 0
-  nswrgp = vcopt_u%nswrgr
-  imligp = vcopt_u%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_u%epsrgr
-  climgp = vcopt_u%climgr
-  extrap = vcopt_u%extrag
-
-  itypfl = 0
-
-  ! --- Viscosity
-  call viscfa (imvisf, dt, viscf, viscb)
-
-  ! --- Boundary Conditions for the convective flux
-  do ifac = 1, nfabor
-
-    iel = ifabor(ifac)
-
-    ! Neumann Boundary Conditions
-    !----------------------------
-
-    qimpv(1) = 0.d0
-    qimpv(2) = 0.d0
-    qimpv(3) = 0.d0
-
-    if (vcopt_p%idften.eq.1) then
-      hint = dt(iel)/distb(ifac)
-
-    ! Symmetric tensor diffusivity
-    elseif (vcopt_p%idften.eq.6) then
-
-      visci(1,1) = vitenp(1,iel)
-      visci(2,2) = vitenp(2,iel)
-      visci(3,3) = vitenp(3,iel)
-      visci(1,2) = vitenp(4,iel)
-      visci(2,1) = vitenp(4,iel)
-      visci(2,3) = vitenp(5,iel)
-      visci(3,2) = vitenp(5,iel)
-      visci(1,3) = vitenp(6,iel)
-      visci(3,1) = vitenp(6,iel)
-
-      ! ||Ki.S||^2
-      viscis = ( visci(1,1)*surfbo(1,ifac)       &
-               + visci(1,2)*surfbo(2,ifac)       &
-               + visci(1,3)*surfbo(3,ifac))**2   &
-             + ( visci(2,1)*surfbo(1,ifac)       &
-               + visci(2,2)*surfbo(2,ifac)       &
-               + visci(2,3)*surfbo(3,ifac))**2   &
-             + ( visci(3,1)*surfbo(1,ifac)       &
-               + visci(3,2)*surfbo(2,ifac)       &
-               + visci(3,3)*surfbo(3,ifac))**2
-
-      ! IF.Ki.S
-      fikis = ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,1)   &
-              + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,1)   &
-              + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,1)   &
-              )*surfbo(1,ifac)                              &
-            + ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,2)   &
-              + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,2)   &
-              + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,2)   &
-              )*surfbo(2,ifac)                              &
-            + ( (cdgfbo(1,ifac)-xyzcen(1,iel))*visci(1,3)   &
-              + (cdgfbo(2,ifac)-xyzcen(2,iel))*visci(2,3)   &
-              + (cdgfbo(3,ifac)-xyzcen(3,iel))*visci(3,3)   &
-              )*surfbo(3,ifac)
-
-      distfi = distb(ifac)
-
-      ! Take I" so that I"F= eps*||FI||*Ki.n when J" is in cell rji
-      ! NB: eps =1.d-1 must be consistent with vitens.f90
-      fikis = max(fikis, 1.d-1*sqrt(viscis)*distfi)
-
-      hint = viscis/surfbn(ifac)/fikis
-
-    endif
-
-    call set_neumann_vector &
-         !=================
-       ( coefar(1,ifac)  , cofafr(1,ifac)  ,             &
-         coefbr(1,1,ifac), cofbfr(1,1,ifac),             &
-         qimpv           , hint             )
-
-  enddo
-
-  call inimav &
-  !==========
- ( f_id0  , itypfl ,                                              &
-   iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-   iwarnp ,                                                       &
-   epsrgp , climgp ,                                              &
-   crom, brom   ,                                                 &
-   trav   ,                                                       &
-   coefar , coefbr ,                                              &
-   velflx , velflb )
-
-  ! --- Boundary condition for the pressure increment
-  ! coefb, coefbf are those of the pressure
-  allocate(coefa_dp2(ndimfb), coefaf_dp2(ndimfb))
-
-  do ifac = 1, nfabor
-   coefa_dp2(ifac) = 0.d0
-   coefaf_dp2(ifac) = 0.d0
-  enddo
-
-  ! --- Convective source term
-  do iel = 1, ncel
-    rhs(iel) = 0.d0
-  enddo
-
-  ivar   = ipr
-  f_id0  = -1
-  iconvp = 1
-  imasac = 1
-  idiffp = 0
-  nswrsp = 1
-  imligp = vcopt_p%imligr
-  ircflp = vcopt_p%ircflu
-  ischcp = vcopt_p%ischcv
-  isstpp = vcopt_p%isstpc
-  inc    = 1
-  iccocg = 1
-  iwarnp = vcopt_p%iwarni
-  imucpp = 0
-  idftnp = vcopt_p%idften
-  blencp = vcopt_p%blencv
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  extrap = vcopt_p%extrag
-  relaxp = vcopt_p%relaxv
-  thetap = 1.d0
-  ! all boundary convective flux with upwind
-  icvflb = 0
-
-  call bilsca &
-  !==========
- ( idtvar , f_id0  , iconvp , idiffp , nswrgp , imligp , ircflp , &
-   ischcp , isstpp , inc    , imrgra , iccocg ,                   &
-   iwarnp , imucpp , idftnp , imasac ,                            &
-   blencp , epsrgp , climgp , extrap , relaxp , thetap ,          &
-   cvar_pr  , cvar_pr       ,                                     &
-   coefa_dp2       , coefb_p, coefaf_dp2      , coefbf_p,         &
-   velflx , velflb , viscf  , viscb  , rvoid  , rvoid  ,          &
-   rvoid  , rvoid  ,                                              &
-   icvflb , ivoid  ,                                              &
-   rhs   )
-
-  ! --- Initialization of the variable to solve
-  do iel = 1, ncel
-    rovsdt(iel) = 340.d0/dt(iel) * cell_f_vol(iel)
-    dpvar(iel)   = 0.d0
-    ddpvar(iel)  = 0.d0
-    rhs(iel)    = - rhs(iel)
-  enddo
-
-  ! --- Solve the convection diffusion equation
-
-  idiffp = 1
-  ! To reinforce the diagonal
-  ndircp = 0
-  nswrsp = vcopt_p%nswrsm
-  nswrgp = vcopt_p%nswrgr
-  imligp = vcopt_p%imligr
-  ircflp = vcopt_p%ircflu
-  ischcp = vcopt_p%ischcv
-  isstpp = vcopt_p%isstpc
-  iescap = 0
-  imucpp = 0
-  idftnp = vcopt_p%idften
-  iswdyp = vcopt_p%iswdyn
-  iwarnp = vcopt_p%iwarni
-  blencp = vcopt_p%blencv
-  epsilp = vcopt_p%epsilo
-  epsrsp = vcopt_p%epsrsm
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  extrap = vcopt_p%extrag
-  relaxp = vcopt_p%relaxv
-  thetap = vcopt_p%thetav
-  ! all boundary convective flux with upwind
-  icvflb = 0
-  ! ivar = 0
-  nomva0 = "Pr compress"
-
-  ! --- Solve the convection diffusion equation
-
-  call sles_push(ivarfl(ipr), "Pr compress")
-
-  call codits &
-  !==========
-   ( idtvar , ivarfl(ivar)    , iconvp , idiffp , ndircp ,          &
-     imrgra , nswrsp , nswrgp , imligp , ircflp ,                   &
-     ischcp , isstpp , iescap , imucpp , idftnp , iswdyp ,          &
-     iwarnp ,                                                       &
-     blencp , epsilp , epsrsp , epsrgp , climgp , extrap ,          &
-     relaxp , thetap ,                                              &
-     dpvar  , dpvar  ,                                              &
-     coefa_dp2       , coefb_p, coefaf_dp2      ,coefbf_p,          &
-     velflx , velflb ,                                              &
-     viscf  , viscb  , viscf  , viscb  , rvoid  ,                   &
-     weighf , weighb ,                                              &
-     icvflb , ivoid  ,                                              &
-     rovsdt , rhs    , dpvar  , ddpvar ,                            &
-     rvoid  , rvoid  )
-
-  call sles_pop(ivarfl(ipr))
-
-  ! --- Update the increment of Pressure
-
-  do iel = 1, ncel
-    cvar_pr(iel) = cvar_pr(iel) + dpvar(iel)
-    ! Remove the last increment
-    dpvar(iel) = dpvar(iel) - ddpvar(iel)
-  enddo
-
-  ! --- Update the Mass flux
-
-  init   = 0
-  inc    = 1
-  iccocg = 1
-  nswrgp = vcopt_p%nswrgr
-  imligp = vcopt_p%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  extrap = vcopt_p%extrag
-
-  if (vcopt_p%idften.eq.1) then
-    call itrmas &
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , iphydr ,     &
-   0      , iwarnp ,                                                           &
-   epsrgp , climgp , extrap ,                                                  &
-   dfrcxt ,                                                                    &
-   dpvar  ,                                                                    &
-   coefa_dp2       , coefb_p, coefaf_dp2      ,coefbf_p,                       &
-   viscf  , viscb  ,                                                           &
-   dt     ,                                                                    &
-   imasfl , bmasfl )
-
-    ! The last increment is not reconstructed to fullfill exactly the continuity
-    ! equation (see theory guide). The value of dfrcxt has no importance.
-    iccocg = 0
-    nswrgp = 0
-    inc = 0
-
-    call itrmas &
- ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , iphydr ,     &
-   0      , iwarnp ,                                                           &
-   epsrgp , climgp , extrap ,                                                  &
-   dfrcxt ,                                                                    &
-   ddpvar ,                                                                    &
-   coefa_dp2       , coefb_p, coefaf_dp2      ,coefbf_p,                       &
-   viscf  , viscb  ,                                                           &
-   dt     ,                                                                    &
-   imasfl , bmasfl )
-
-  else if (vcopt_p%idften.eq.6) then
-
-    call itrmav &
-   ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-     iphydr , 0      , iwarnp ,                                              &
-     epsrgp , climgp , extrap ,                                              &
-     dfrcxt ,                                                                &
-     dpvar  ,                                                                &
-     coefa_dp2       , coefb_p, coefaf_dp2      ,coefbf_p,                   &
-     viscf  , viscb  ,                                                       &
-     vitenp ,                                                                &
-     weighf , weighb ,                                                       &
-     imasfl , bmasfl )
-
-    ! The last increment is not reconstructed to fullfill exactly the continuity
-    ! equation (see theory guide). The value of dfrcxt has no importance.
-    iccocg = 0
-    nswrgp = 0
-    inc = 0
-
-    call itrmav &
-   ( f_id0  , init   , inc    , imrgra , iccocg , nswrgp , imligp , ircflp , &
-     iphydr , 0      , iwarnp ,                                              &
-     epsrgp , climgp , extrap ,                                              &
-     dfrcxt ,                                                                &
-     ddpvar ,                                                                &
-     coefa_dp2       , coefb_p, coefaf_dp2      ,coefbf_p,                   &
-     viscf  , viscb  ,                                                       &
-     vitenp ,                                                                &
-     weighf , weighb ,                                                       &
-     imasfl , bmasfl )
-
-  endif
-
-  ! Free memory
-  deallocate(ddpvar)
-  deallocate(coefa_dp2, coefaf_dp2)
-  deallocate(coefar, coefbr)
-  deallocate(cofafr, cofbfr)
-  deallocate(velflx, velflb)
-
-endif
 
 !===============================================================================
 ! 10. Update the pressure field
@@ -2311,21 +1027,6 @@ else
 endif
 
 ! Transformation of volumic mass fluxes into massic mass fluxes
-if (idilat.eq.4) then
-
-  do ifac = 1, nfabor
-    bmasfl(ifac) = bmasfl(ifac) * brom(ifac)
-  enddo
-
-  do ifac = 1, nfac
-    ii = ifacel(1, ifac)
-    jj = ifacel(2, ifac)
-    ! FIXME: should be coherent with the convective scheme of the species...
-    rho = pond(ifac)*crom(ii)+(1.d0-pond(ifac))*crom(jj)
-    imasfl(ifac) = imasfl(ifac) * rho
-  enddo
-
-endif
 
 ! Free memory
 deallocate(dam, xam)
@@ -2334,8 +1035,6 @@ deallocate(gradp)
 deallocate(coefaf_dp, coefbf_dp)
 deallocate(rhs, rovsdt)
 if (allocated(weighf)) deallocate(weighf, weighb)
-if (iswdyp.ge.1) deallocate(adxk, adxkm1, dpvarm1, rhs0)
-if (icalhy.eq.1) deallocate(frchy, dfrchy, hydro_pres)
 if (ivofmt.ge.0.or.idilat.eq.4) then
   if (allocated(xdtsro)) deallocate(xdtsro)
   if (allocated(xunsro)) deallocate(xunsro)
