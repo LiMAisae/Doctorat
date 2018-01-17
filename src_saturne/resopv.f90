@@ -259,7 +259,8 @@ allocate(res(ncelet), presa(ncelet), divu(ncelet))
 allocate(rhs(ncelet), rovsdt(ncelet))
 allocate(iflux(nfac), bflux(ndimfb))
 iswdyp = vcopt_p%iswdyn
-
+if (iswdyp.ge.1) allocate(adxk(ncelet), adxkm1(ncelet),   &
+                          dpvarm1(ncelet), rhs0(ncelet))
 if (icalhy.eq.1) allocate(frchy(ndim,ncelet),             &
                           dfrchy(ndim,ncelet), hydro_pres(ncelet))
 
@@ -319,11 +320,6 @@ iesize = 1
 
 
 !===============================================================================
-! 2. Norm residual
-!===============================================================================
-
-
-!===============================================================================
 ! 3. Compute a approximated pressure increment if needed
 !    that is when there is buoyancy terms (gravity and variable density)
 !    with a free outlet.
@@ -341,7 +337,7 @@ do ifac = 1, nfabor
   coefbf_dp(ifac) = coefbf_p(ifac)
   bflux(ifac) = 0.d0
 enddo
-print*, "iphydr, icalhy", iphydr, icalhy
+
 ! Compute a pseudo hydrostatic pressure increment stored
 ! in hydro_pres(.) with Homogeneous Neumann BCs everywhere
 
@@ -350,91 +346,7 @@ print*, "iphydr, icalhy", iphydr, icalhy
 !  that are (A = 0, B_dp = B_p) for the gradient BCs
 !  Then the A_dp is set thank to the pre-computed hydrostatic pressure
 !  so that the pressure increment will be 0 on the reference outlet face.
-print*, "iifren", iifren
-if (iphydr.eq.1.or.iifren.eq.1) then
 
-
-  if (indhyd.eq.1) then
-    ifac0 = isostd(nfabor+1)
-    if (ifac0.le.0) then
-      phydr0 = 0.d0
-    else
-      iel0 = ifabor(ifac0)
-      phydr0 = hydro_pres(iel0)                                     &
-           +(cdgfbo(1,ifac0)-xyzcen(1,iel0))*dfrcxt(1 ,iel0) &
-           +(cdgfbo(2,ifac0)-xyzcen(2,iel0))*dfrcxt(2 ,iel0) &
-           +(cdgfbo(3,ifac0)-xyzcen(3,iel0))*dfrcxt(3 ,iel0)
-    endif
-
-    if (irangp.ge.0) then
-      call parsom (phydr0)
-    endif
-  endif
-
-  ! If hydrostatic pressure increment or free entrance Inlet
-  if (indhyd.eq.1.or.iifren.eq.1) then
-
-    do ifac = 1, nfabor
-      if (isostd(ifac).eq.1) then
-        iel=ifabor(ifac)
-
-        if (indhyd.eq.1) then
-          coefa_dp(ifac) =  hydro_pres(iel)                               &
-                         + (cdgfbo(1,ifac)-xyzcen(1,iel))*dfrcxt(1 ,iel)  &
-                         + (cdgfbo(2,ifac)-xyzcen(2,iel))*dfrcxt(2 ,iel)  &
-                         + (cdgfbo(3,ifac)-xyzcen(3,iel))*dfrcxt(3 ,iel)  &
-                         -  phydr0
-        endif
-
-        ! Diffusive flux BCs
-        if (vcopt_p%idften.eq.1) then
-          hint = dt(iel)/distb(ifac)
-
-        ! Symmetric tensor diffusivity
-        
-        endif
-
-        ! Free entrance boundary face (Bernoulli condition to link the pressure
-        ! increment and the predicted velocity)
-        if (itypfb(ifac).eq.ifrent) then
-
-          ! Boundary mass flux of the predicted velocity
-          bpmasf = vel(1, iel)*surfbo(1, ifac)    &
-                 + vel(2, iel)*surfbo(2, ifac)    &
-                 + vel(3, iel)*surfbo(3, ifac)
-
-          ! Ingoing mass Flux, Bernoulli relation ship is used
-          if (bpmasf.le.0.d0) then
-
-            ! Head loss of the fluid outside the domain, between infinity and
-            ! the entrance
-            kpdc = b_head_loss(ifac)
-            rho = brom(ifac)
-            cfl = -(bmasfl(ifac)/surfbn(ifac)*dt(iel))    &
-                / (2.d0*rho*distb(ifac))*(1.d0 + kpdc)
-
-            pimp = - cvar_pr(iel)                                              &
-                 - 0.5d0*(1.d0 + kpdc)*bmasfl(ifac)*bpmasf/surfbn(ifac)**2
-
-            call set_convective_outlet_scalar &
-                 !==================
-               ( coefa_dp(ifac), coefaf_dp(ifac),             &
-                 coefb_dp(ifac), coefbf_dp(ifac),             &
-                 pimp        , cfl         , hint )
-
-          else
-            coefaf_dp(ifac) = - hint*coefa_dp(ifac)
-          endif
-
-        else
-          coefaf_dp(ifac) = - hint*coefa_dp(ifac)
-        endif
-
-      endif
-    enddo
-  endif
-
-endif
 
 !===============================================================================
 ! 4. Building of the linear system to solve
@@ -589,32 +501,6 @@ call inimav &
    imasfl , bmasfl )
 
 
-! --- Projection aux faces des forces exterieures
-
-if (iphydr.eq.1) then
-  init   = 0
-  inc    = 0
-  iccocg = 1
-  nswrgp = vcopt_p%nswrgr
-  imligp = vcopt_p%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  ircflp = vcopt_p%ircflu
-
-  ! Scalar diffusivity
-  if (vcopt_p%idften.eq.1) then
-    call projts &
-    !==========
- ( init   , nswrgp ,                                              &
-   dfrcxt ,                                                       &
-   coefbf_p ,                                                     &
-   imasfl , bmasfl ,                                              &
-   viscf  , viscb  ,                                              &
-   dt     , dt     , dt     )
-
-  endif
-endif
 
 init   = 0
 inc    = 1
@@ -670,37 +556,6 @@ if (arak.gt.0.d0) then
    viscap ,                                                                    &
    imasfl , bmasfl )
 
-    ! Projection du terme source pour oter la partie hydrostat de la pression
-    if (iphydr.eq.1) then
-      init   = 0
-      inc    = 0
-      iccocg = 1
-      nswrgp = vcopt_p%nswrgr
-      imligp = vcopt_p%imligr
-      iwarnp = vcopt_p%iwarni
-      epsrgp = vcopt_p%epsrgr
-      climgp = vcopt_p%climgr
-
-      ! A 0 boundary coefficient coefbf_dp is passed to projts
-      ! to cancel boundary terms
-      allocate(cofbfp(ndimfb))
-      do ifac = 1,nfabor
-        cofbfp(ifac) = 0.d0
-      enddo
-
-      call projts &
-      !==========
- ( init   , nswrgp ,                                              &
-   frcxt  ,                                                       &
-   cofbfp ,                                                       &
-   imasfl , bmasfl ,                                              &
-   viscf  , viscb  ,                                              &
-   dt     , dt     , dt     )
-
-      deallocate(cofbfp)
-
-    endif
-
     ! --- Correction du pas de temps
     unsara = 1.d0/arak
     do iel = 1, ncel
@@ -741,24 +596,11 @@ do iel = 1, ncel
 enddo
 
 relaxp = vcopt_p%relaxv
-print*, "relaxp", relaxp
+
 ! --- Initial divergence
 init = 1
 
 call divmas(init, imasfl , bmasfl , divu)
-
-! --- Weakly compressible algorithm: semi analytic scheme
-!     1. The RHS contains rho div(u*) and not div(rho u*)
-!     2. Add dilatation source term to rhs
-!     3. The mass flux is completed by rho u* . S
-
-
-! --- Masse source terms adding for volumic flow rate
-
-! --- Source term adding for condensation modelling
-
-! --- volume Gamma source for metal mass structures
-!     condensation modelling
 
 ! --- Source term associated to the mass aggregation
 if (idilat.eq.2.or.idilat.eq.3) then
@@ -768,9 +610,6 @@ if (idilat.eq.2.or.idilat.eq.3) then
   enddo
 endif
 
-! ---> Termes sources Lagrangien
-
-! --- Cavitation source term
 
 ! --- Initial right hand side
 do iel = 1, ncel
@@ -796,9 +635,6 @@ isweep = 1
 if (vcopt_p%iwarni.ge.2) then
   write(nfecra,1400)chaine(1:16),isweep,residu, relaxp
 endif
-
-! Dynamic relaxation initialization
-!----------------------------------
 
 ! Reconstruction loop (beginning)
 !--------------------------------
@@ -826,9 +662,6 @@ do while (isweep.le.nswmpr.and.residu.gt.vcopt_p%epsrsm*rnormp)
   call sles_solve_native(ivarfl(ipr), '',                            &
                          isym, ibsize, iesize, dam, xam, iinvpe,     &
                          epsilp, rnormp, niterf, ressol, rhs, dpvar)
-
-  ! Dynamic relaxation of the system
-  !---------------------------------
   
 
   ! Update the increment of pressure
@@ -1035,6 +868,8 @@ deallocate(gradp)
 deallocate(coefaf_dp, coefbf_dp)
 deallocate(rhs, rovsdt)
 if (allocated(weighf)) deallocate(weighf, weighb)
+if (iswdyp.ge.1) deallocate(adxk, adxkm1, dpvarm1, rhs0)
+if (icalhy.eq.1) deallocate(frchy, dfrchy, hydro_pres)
 if (ivofmt.ge.0.or.idilat.eq.4) then
   if (allocated(xdtsro)) deallocate(xdtsro)
   if (allocated(xunsro)) deallocate(xunsro)
