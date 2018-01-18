@@ -372,41 +372,9 @@ else
   iprev = 1
 endif
 
-if (ivofmt.lt.0) then
   call field_gradient_potential(ivarfl(ipr), iprev, imrgra, inc,    &
                                 iccocg, iphydr,                     &
                                 frcxt, grad)
-
-else
-
-  ! VOF algorithm: consistency of the gradient
-  ! with the diffusive flux scheme of the correction step
-
-  call field_get_coefa_s (ivarfl(ipr), coefa_p)
-  call field_get_coefb_s (ivarfl(ipr), coefb_p)
-
-  allocate(xinvro(ncelet))
-
-  do iel = 1, ncel
-    xinvro(iel) = 1.d0/crom(iel)
-  enddo
-
-  iccocg = 1
-  inc    = 1
-  nswrgp = vcopt_p%nswrgr
-  imligp = vcopt_p%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  extrap = vcopt_p%extrag
-
-  call gradient_weighted_s(ivarfl(ipr), imrgra, inc, iccocg, nswrgp, imligp,  &
-                           iwarnp, epsrgp, climgp, extrap,                    &
-                           cvara_pr, xinvro, coefa_p, coefb_p,                &
-                           grad )
-
-  deallocate(xinvro)
-
 endif
 
 !    Calcul des efforts aux parois (partie 2/5), si demande
@@ -414,6 +382,7 @@ endif
 !    et on la transforme en pression totale
 !    On se limite a la premiere iteration (pour faire simple par
 !      rapport a la partie issue de condli, hors boucle)
+print*,"iforbr", iforbr
 if (iforbr.ge.0 .and. iterns.eq.1) then
   call field_get_coefa_s (ivarfl(ipr), coefa_p)
   call field_get_coefb_s (ivarfl(ipr), coefb_p)
@@ -502,40 +471,6 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
   init = 1
   call divmas(init,viscf,viscb,xnormp)
 
-!-- Volumic Gamma source term adding for volumic mass flow rate
-  if (ncesmp.gt.0) then
-    do ii = 1, ncesmp
-      iel = icetsm(ii)
-      xnormp(iel) = xnormp(iel) - cell_f_vol(iel)*smacel(ii,ipr)
-    enddo
-  endif
-
-!-- Surface Gamma source term adding for surface condensation modelling
-  if (nfbpcd.gt.0) then
-    do ii = 1, nfbpcd
-      ifac= ifbpcd(ii)
-      iel = ifabor(ifac)
-      xnormp(iel) = xnormp(iel) - surfbn(ifac) * spcond(ii,ipr)
-    enddo
-  endif
-
-! --- volume Gamma source term adding for volume condensation modelling
-  if (icondv.eq.0) then
-    allocate(surfbm(ncelet))
-    surfbm(:) = 0.d0
-
-    do ii = 1, ncmast
-      iel= ltmast(ii)
-      surfbm(iel) = s_metal*volume(iel)/voltot
-      xnormp(iel) = xnormp(iel)  - surfbm(iel)*svcond(iel,ipr)
-    enddo
-
-    deallocate(surfbm)
-  endif
-
-  if (idilat.ge.4) then
-    call field_get_val_s(iustdy(itsrho), cpro_tsrho)
-  endif
 
   ! Dilatable mass conservative algorithm
   if (idilat.eq.2) then
@@ -543,22 +478,7 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
       drom = crom(iel) - croma(iel)
       xnormp(iel) = xnormp(iel) + drom*cell_f_vol(iel)/dt(iel)
     enddo
-  ! Semi-analytic weakly compressible algorithm add + 1/rho Drho/Dt
-  else if (idilat.eq.4)then
-    do iel = 1, ncel
-      xnormp(iel) = xnormp(iel) + cpro_tsrho(iel)/crom(iel)
-    enddo
-  else if (idilat.eq.5) then
-    do iel = 1, ncel
-      xnormp(iel) = xnormp(iel) + cpro_tsrho(iel)
-    enddo
-  endif
 
-  ! Cavitation source term
-  if (icavit.gt.0) then
-    do iel = 1, ncel
-      xnormp(iel) = xnormp(iel) -cell_f_vol(iel)*gamcav(iel)*(1.d0/rho2 - 1.d0/rho1)
-    enddo
   endif
 
 !     On conserve XNORMP, on complete avec u* a la fin et
@@ -579,6 +499,7 @@ endif
 !         chaque fois (ie on pourrait le passer dans trava) mais ce n'est
 !         pas cher.
 if (iappel.eq.1) then
+  print*,"ippmod(icompf), iphydr", ippmod(icompf), iphydr
   if (iphydr.eq.1) then
     do iel = 1, ncel
       trav(1,iel) = (frcxt(1 ,iel) - grad(1,iel)) * cell_f_vol(iel)
@@ -665,6 +586,7 @@ deallocate(grad)
 if (iterns.eq.1) then
 
   ! Si on   extrapole     les T.S. : -theta*valeur precedente
+  print*,"isno2t", isno2t
   if (isno2t.gt.0) then
     ! S'il n'y a qu'une    iter : TRAV  incremente
     if (nterup.eq.1) then
@@ -711,10 +633,6 @@ if (iappel.eq.1) then
   ! Low Mach compressible Algos
   if (idilat.gt.1.or.ippmod(icompf).ge.0) then
     call field_get_val_prev_s(icrom, pcrom)
-
-  ! VOF algorithm
-  else if (ivofmt.ge.0) then
-    call field_get_val_s(icroaa, pcrom)
 
   ! Standard algo
   else
@@ -780,6 +698,7 @@ if (vcopt_u%idiff.ge. 1) then
   call field_get_val_s(iviscl, viscl)
   call field_get_val_s(ivisct, visct)
 
+  print*, "itytur", itytur
   if (itytur.eq.3) then
     do iel = 1, ncel
       w1(iel) = viscl(iel)
@@ -791,68 +710,14 @@ if (vcopt_u%idiff.ge. 1) then
   endif
 
   ! Scalar diffusivity (Default)
-  if (vcopt_u%idften.eq.1) then
+
 
     call viscfa &
    ( imvisf ,                                                       &
      w1     ,                                                       &
      viscf  , viscb  )
 
-    ! When using Rij-epsilon model with the option irijnu=1, the face
-    ! viscosity for the Matrix (viscfi and viscbi) is increased
-    if(itytur.eq.3.and.irijnu.eq.1) then
 
-      do iel = 1, ncel
-        w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
-      enddo
-
-      call viscfa &
-   ( imvisf ,                                                       &
-     w1     ,                                                       &
-     viscfi , viscbi )
-    endif
-
-  ! Tensorial diffusion of the velocity (in case of tensorial porosity)
-  else if (vcopt_u%idften.eq.6) then
-
-    do iel = 1, ncel
-      do isou = 1, 3
-        viscce(isou, iel) = w1(iel)
-      enddo
-      do isou = 4, 6
-        viscce(isou, iel) = 0.d0
-      enddo
-    enddo
-
-    call vistnv &
-     ( imvisf ,                                                       &
-       viscce ,                                                       &
-       viscf  , viscb  )
-
-    ! When using Rij-epsilon model with the option irijnu=1, the face
-    ! viscosity for the Matrix (viscfi and viscbi) is increased
-    if(itytur.eq.3.and.irijnu.eq.1) then
-
-      do iel = 1, ncel
-        w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
-      enddo
-
-      do iel = 1, ncel
-        do isou = 1, 3
-          viscce(isou, iel) = w1(iel)
-        enddo
-        do isou = 4, 6
-          viscce(isou, iel) = 0.d0
-        enddo
-      enddo
-
-      call vistnv &
-       ( imvisf ,                                                       &
-         viscce ,                                                       &
-         viscfi , viscbi )
-
-    endif
-  endif
 
 ! --- If no diffusion, viscosity is set to 0.
 else
@@ -927,16 +792,9 @@ enddo
 ! at the first iteration only.
 if (iterns.eq.1) then
 
+  print*, "iihmpr", iihmpr
   if (iihmpr.eq.1) then
     call uitsnv (vel, tsexp, tsimp)
-  endif
-
-  n_fans = cs_fan_n_fans()
-  if (n_fans .gt. 0) then
-    if (ntcabs.eq.ntpabs+1) then
-      call debvtl(flumas, flumab, crom, brom)
-    endif
-    call tsvvtl(tsexp)
   endif
 
   call ustsnv &
@@ -967,26 +825,6 @@ if (iterns.eq.1) then
     endif
   endif
 
-  ! Coupling between two Code_Saturne
-  if (nbrcpl.gt.0) then
-    !vectorial interleaved exchange
-    call csccel(iu, vela, coefav, coefbv, tsexp)
-  endif
-
-  if (iphydr.eq.1.and.igpust.eq.1) then
-
-    do iel = 1, ncel
-      !FIXME when using porosity
-      dvol = 1.d0/cell_f_vol(iel)
-      do isou = 1, 3
-        dfrcxt(isou, iel) = dfrcxt(isou, iel) + tsexp(isou, iel)*dvol
-      enddo
-    enddo
-
-    if (irangp.ge.0.or.iperio.eq.1) then
-      call synvin(dfrcxt)
-    endif
-  endif
 
 endif
 
