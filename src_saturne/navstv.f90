@@ -349,15 +349,6 @@ if (nterup.gt.1) then
     xnrmu0 = sqrt(xnrmu0)
   endif
 
-  ! On assure la periodicite ou le parallelisme de UVWK et la pression
-  ! (cette derniere vaut la pression a l'iteration precedente)
-  if (iterns.gt.1) then
-    if (irangp.ge.0.or.iperio.eq.1) then
-      call synvin(uvwk(1,1))
-      call synsca(cvara_pr)
-    endif
-  endif
-
 endif
 
 ! --- Physical quantities
@@ -381,45 +372,8 @@ if ((idilat.eq.2.or.idilat.eq.3).and. &
 
 endif
 
-!===============================================================================
-! 2. Hydrostatic pressure prediction in case of Low Mach compressible algorithm
-!===============================================================================
 
-if (iphydr.eq.2) then
 
-  call prehyd(grdphd)
-
-endif
-
-!===============================================================================
-! 3. Pressure resolution and computation of mass flux for compressible flow
-!===============================================================================
-
-if ( ippmod(icompf).ge.0 ) then
-
-  if(vcopt_u%iwarni.ge.1) then
-    write(nfecra,1080)
-  endif
-
-  call cfmspr &
-  ( nvar   , nscal  , iterns ,                                     &
-    ncepdc , ncetsm , icepdc , icetsm , itypsm ,                   &
-    dt     , vela   ,                                              &
-    ckupdc , smacel )
-
-endif
-
-!===============================================================================
-! 4. Compute liquid-vapour mass transfer term for cavitating flows
-!===============================================================================
-
-if (icavit.ge.0) then
-
-  call field_get_val_s(iprtot, cpro_prtot)
-
-  call cavitation_compute_source_term (cpro_prtot, cvara_voidf)
-
-endif
 
 !===============================================================================
 ! 5. Velocity prediction step
@@ -485,119 +439,6 @@ if (iprco.le.0) then
    coefau , coefbu ,                                              &
    imasfl , bmasfl )
 
-  ! In the ALE framework, we add the mesh velocity
-  if (iale.eq.1) then
-
-    call field_get_val_v(ivarfl(iuma), mshvel)
-
-    call field_get_val_prev_v(fdiale, disala)
-
-    ! One temporary array needed for internal faces, in case some internal vertices
-    !  are moved directly by the user
-    allocate(intflx(nfac), bouflx(ndimfb))
-
-    itypfl = 1
-    init   = 1
-    inc    = 1
-    iflmb0 = 1
-    call field_get_key_struct_var_cal_opt(ivarfl(iuma), vcopt)
-    nswrgp = vcopt%nswrgr
-    imligp = vcopt%imligr
-    iwarnp = vcopt%iwarni
-    epsrgp = vcopt%epsrgr
-    climgp = vcopt%climgr
-
-    call field_get_coefa_v(ivarfl(iuma), claale)
-    call field_get_coefb_v(ivarfl(iuma), clbale)
-
-    call inimav &
-  ( ivarfl(iuma)    , itypfl ,                                     &
-    iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-    iwarnp ,                                                       &
-    epsrgp , climgp ,                                              &
-    crom, brom,                                                    &
-    mshvel ,                                                       &
-    claale , clbale ,                                              &
-    intflx , bouflx )
-
-    ! Here we need of the opposite of the mesh velocity.
-    !$omp parallel do if(nfabor > thr_n_min)
-    do ifac = 1, nfabor
-      bmasfl(ifac) = bmasfl(ifac) - bouflx(ifac)
-    enddo
-
-    !$omp parallel do private(ddepx, ddepy, ddepz, icpt, ii, inod, &
-    !$omp                     iel1, iel2, dtfac, rhofac)
-    do ifac = 1, nfac
-      ddepx = 0.d0
-      ddepy = 0.d0
-      ddepz = 0.d0
-      icpt  = 0
-      do ii = ipnfac(ifac),ipnfac(ifac+1)-1
-        inod = nodfac(ii)
-        icpt = icpt + 1
-        ddepx = ddepx + xyznod(1,inod)-xyzno0(1,inod) - disala(1,inod)
-        ddepy = ddepy + xyznod(2,inod)-xyzno0(2,inod) - disala(2,inod)
-        ddepz = ddepz + xyznod(3,inod)-xyzno0(3,inod) - disala(3,inod)
-      enddo
-      ! Compute the mass flux using the nodes displacement
-      if (iflxmw.eq.0) then
-        ! For inner vertices, the mass flux due to the mesh displacement is
-        !  recomputed from the nodes displacement
-        iel1 = ifacel(1,ifac)
-        iel2 = ifacel(2,ifac)
-        dtfac = 0.5d0*(dt(iel1) + dt(iel2))
-        rhofac = 0.5d0*(crom(iel1) + crom(iel2))
-        imasfl(ifac) = imasfl(ifac) - rhofac*(                    &
-              ddepx*surfac(1,ifac)                                &
-             +ddepy*surfac(2,ifac)                                &
-             +ddepz*surfac(3,ifac) )/dtfac/icpt
-      else
-        imasfl(ifac) = imasfl(ifac) - intflx(ifac)
-      endif
-    enddo
-
-    ! Free memory
-    deallocate(intflx, bouflx)
-
-  endif
-
-  ! Ajout de la vitesse du solide dans le flux convectif,
-  ! si le maillage est mobile (solide rigide)
-  ! En turbomachine, on connait exactement la vitesse de maillage a ajouter
-  if (imobil.eq.1 .or. iturbo.eq.1 .or. iturbo.eq.2) then
-    !$omp parallel do private(iel1, iel2, dtfac, rhofac )
-    do ifac = 1, nfac
-      iel1 = ifacel(1,ifac)
-      iel2 = ifacel(2,ifac)
-      if (irotce(iel1).ne.0 .or. irotce(iel2).ne.0) then
-
-        rhofac = 0.5d0*(crom(iel1) + crom(iel2))
-        call rotation_velocity(irotce(iel1), cdgfac(:,ifac), vr1)
-        call rotation_velocity(irotce(iel2), cdgfac(:,ifac), vr2)
-
-        imasfl(ifac) = imasfl(ifac) - 0.5d0 * rhofac*(      &
-                          surfac(1,ifac)*(vr1(1) + vr2(1))  &
-                        + surfac(2,ifac)*(vr1(2) + vr2(2))  &
-                        + surfac(3,ifac)*(vr1(3) + vr2(3)) )
-      endif
-    enddo
-    !$omp parallel do private(iel, dtfac, rhofac) &
-    !$omp          if(nfabor > thr_n_min)
-    do ifac = 1, nfabor
-      iel = ifabor(ifac)
-      if (irotce(iel).ne.0) then
-
-        rhofac = brom(ifac)
-        call rotation_velocity(irotce(iel), cdgfbo(:,ifac), vr)
-
-        bmasfl(ifac) = bmasfl(ifac) - rhofac*( surfbo(1,ifac)*vr(1) &
-                                             + surfbo(2,ifac)*vr(2) &
-                                             + surfbo(3,ifac)*vr(3) )
-      endif
-    enddo
-  endif
-
   ! Free memory
   !--------------
   deallocate(coefa_dp, coefb_dp)
@@ -606,188 +447,7 @@ if (iprco.le.0) then
 
 endif
 
-!===============================================================================
-! 6. Update mesh for unsteady turbomachinery computations
-!===============================================================================
 
-if (iturbo.eq.2 .and. iterns.eq.1) then
-
-  ! Update mesh
-
-  call turbomachinery_update_mesh (ttcmob, rs_ell(1))
-
-  call dmtmps(t1)
-
-  do ifac = 1, nfabor
-    isympa(ifac) = 1
-  enddo
-
-  ! Scratch and resize temporary internal faces arrays
-
-  deallocate(viscf)
-  if (vcopt_u%idften.eq.1) then
-    allocate(viscf(1, 1, nfac))
-  else if (vcopt_u%idften.eq.6) then
-    allocate(viscf(3, 3, nfac))
-  endif
-
-  if (allocated(wvisfi)) then
-    deallocate(viscfi)
-
-    if (vcopt_u%idften.eq.1) then
-      if (itytur.eq.3.and.irijnu.eq.1) then
-        allocate(wvisfi(1,1,nfac))
-        viscfi => wvisfi(:,:,1:nfac)
-      else
-        viscfi => viscf(:,:,1:nfac)
-      endif
-    else if(vcopt_u%idften.eq.6) then
-      if (itytur.eq.3.and.irijnu.eq.1) then
-        allocate(wvisfi(3,3,nfac))
-        viscfi => wvisfi(1:3,1:3,1:nfac)
-      else
-        viscfi => viscf(1:3,1:3,1:nfac)
-      endif
-    endif
-
-  endif
-
-  if (allocated(secvif)) then
-    deallocate(secvif)
-    allocate(secvif(nfac))
-  endif
-
-  ! Scratch, resize and initialize main internal faces properties array
-
-  call turbomachinery_reinit_i_face_fields
-
-  ! Update local pointers on "internal faces" fields
-
-  call field_get_val_s(iflmas, imasfl)
-
-  if (irangp.ge.0 .or. iperio.eq.1) then
-
-    ! Scratch and resize work arrays
-
-    deallocate(w1, w7, w8, w9)
-    allocate(w1(ncelet), w7(ncelet), w8(ncelet), w9(ncelet))
-
-    ! Resize auxiliary arrays (pointe module)
-
-    call resize_aux_arrays
-
-    ! Update turbomachinery module
-
-    call turbomachinery_update
-
-    ! Update field mappings ("owner" fields handled by turbomachinery_update)
-
-    call fldtri
-    call field_get_val_s_by_name('dt', dt)
-
-    ! Resize other arrays related to the velocity-pressure resolution
-
-    call resize_vec_real_array(trav)
-    call resize_vec_real_array(dfrcxt)
-
-    ! Resize other arrays, depending on user options
-
-    if (iilagr.gt.0) &
-      call resize_n_sca_real_arrays(ntersl, tslagr)
-
-    if (iphydr.eq.1) then
-      call field_get_val_v_by_name('volume_forces', frcxt)
-    elseif (iphydr.eq.2) then
-      call resize_vec_real_array(grdphd)
-    endif
-
-    if (nterup.gt.1) then
-      call resize_vec_real_array(uvwk)
-      call resize_tens_real_array(ximpa)
-    endif
-
-    if (nterup.gt.1.or.isno2t.gt.0) then
-      call resize_vec_real_array(trava)
-    endif
-
-    ! Update local pointers on "cells" fields
-
-    call field_get_val_s(icrom, crom)
-
-    call field_get_val_s(iviscl, viscl)
-    call field_get_val_s(ivisct, visct)
-
-    call field_get_val_v(ivarfl(iu), vel)
-    call field_get_val_prev_v(ivarfl(iu), vela)
-
-    call field_get_val_s(ivarfl(ipr), cvar_pr)
-    call field_get_val_prev_s(ivarfl(ipr), cvara_pr)
-
-    if (idtten.ge.0) call field_get_val_v(idtten, dttens)
-
-    if (ivofmt.ge.0) then
-      call field_get_val_s(ivarfl(ivolf2), cvar_voidf)
-      call field_get_val_prev_s(ivarfl(ivolf2), cvara_voidf)
-    endif
-
-  endif
-
-  ! Update the Dirichlet wall boundary conditions for velocity (based on the
-  ! solid body rotation on the new mesh).
-  ! Note that the velocity BC update is made only if the user has not specified
-  ! any specific Dirichlet condition for velocity.
-
-  do ifac = 1, nfabor
-
-    iel = ifabor(ifac)
-
-    if (coftur(ifac).lt.rinfin*0.5d0) then
-
-      ! --- Physical Propreties
-      visclc = viscl(iel)
-      visctc = visct(iel)
-
-      ! --- Geometrical quantities
-      distbf = distb(ifac)
-      srfbnf = surfbn(ifac)
-
-      ! Unit normal
-      rnx = surfbo(1,ifac)/srfbnf
-      rny = surfbo(2,ifac)/srfbnf
-      rnz = surfbo(3,ifac)/srfbnf
-
-      if (itytur.eq.3) then
-        hint =   visclc         /distbf
-      else
-        hint = ( visclc+visctc )/distbf
-      endif
-
-      call rotation_velocity(irotce(iel), cdgfbo(:,ifac), vr)
-
-      ! Gradient boundary conditions (Dirichlet)
-      !-----------------------------
-      vrn = vr(1)*rnx + vr(2)*rny + vr(3)*rnz
-
-      coefau(1,ifac) = (1.d0-coftur(ifac))*(vr(1) - vrn*rnx) + vrn*rnx
-      coefau(2,ifac) = (1.d0-coftur(ifac))*(vr(2) - vrn*rny) + vrn*rny
-      coefau(3,ifac) = (1.d0-coftur(ifac))*(vr(3) - vrn*rnz) + vrn*rnz
-
-      ! Flux boundary conditions (Dirichlet)
-      !-------------------------
-
-      cofafu(1,ifac) = -hfltur(ifac)*(vr(1) - vrn*rnx) - hint*vrn*rnx
-      cofafu(2,ifac) = -hfltur(ifac)*(vr(2) - vrn*rny) - hint*vrn*rny
-      cofafu(3,ifac) = -hfltur(ifac)*(vr(3) - vrn*rnz) - hint*vrn*rnz
-
-    endif
-
-  enddo
-
-  call dmtmps(t2)
-
-  rs_ell(2) = t2-t1
-
-endif
 
 !===============================================================================
 ! 7. Pressure correction step
@@ -815,17 +475,7 @@ if (ippmod(icompf).lt.0) then
 
 endif
 
-!===============================================================================
-! 8. Mesh velocity solving (ALE)
-!===============================================================================
 
-if (iale.eq.1) then
-
-  if (itrale.gt.nalinf) then
-    call alelav
-  endif
-
-endif
 
 !===============================================================================
 ! 9. Update of the fluid velocity field
@@ -865,11 +515,6 @@ if (ippmod(icompf).lt.0) then
       enddo
     endif
 
-    ! --->    TRAITEMENT DU PARALLELISME ET DE LA PERIODICITE
-
-    if (irangp.ge.0.or.iperio.eq.1) then
-      call synsca(dpvar)
-    endif
 
     iccocg = 1
     inc = 0
@@ -884,27 +529,14 @@ if (ippmod(icompf).lt.0) then
     !Allocation
     allocate(gradp(3, ncelet))
 
-    if (ivofmt.lt.0) then
-      call gradient_potential_s &
-       (ivarfl(ipr)     , imrgra , inc    , iccocg , nswrgp , imligp , &
-        iphydr , iwarnp , epsrgp , climgp , extrap ,                   &
-        dfrcxt ,                                                       &
-        dpvar  , coefa_dp        , coefb_dp        ,                   &
-        gradp  )
-    else
-      allocate(xinvro(ncelet))
-      do iel = 1, ncel
-        xinvro(iel) = 1.d0/crom(iel)
-      enddo
 
-      call gradient_weighted_s &
-      ( ivarfl(ipr)     , imrgra , inc    , iccocg , nswrgp , imligp , &
-        iwarnp , epsrgp , climgp , extrap ,                            &
-        dpvar  , xinvro , coefa_dp , coefb_dp ,                        &
-        gradp  )
+    call gradient_potential_s &
+    (ivarfl(ipr)     , imrgra , inc    , iccocg , nswrgp , imligp , &
+    iphydr , iwarnp , epsrgp , climgp , extrap ,                   &
+    dfrcxt ,                                                       &
+    dpvar  , coefa_dp        , coefb_dp        ,                   &
+    gradp  )
 
-      deallocate(xinvro)
-    endif
 
     !$omp parallel do private(isou)
     do iel = 1, ncelet
@@ -921,74 +553,9 @@ if (ippmod(icompf).lt.0) then
     thetap = vcopt_p%thetav
 
     ! Specific handling of hydrostatic pressure
-    !------------------------------------------
-    if (iphydr.eq.1) then
+    !-----------------------------------------
 
       ! Scalar diffusion for the pressure
-      if (vcopt_p%idften.eq.1) then
-        !$omp parallel do private(dtsrom, isou)
-        do iel = 1, ncel
-          dtsrom = thetap*dt(iel)/crom(iel)
-          do isou = 1, 3
-            vel(isou,iel) = vel(isou,iel)                            &
-                 + dtsrom*(dfrcxt(isou, iel)-trav(isou,iel))
-          enddo
-        enddo
-
-      ! Tensorial diffusion for the pressure
-      else if (vcopt_p%idften.eq.6) then
-        !$omp parallel do private(unsrom)
-        do iel = 1, ncel
-          unsrom = thetap/crom(iel)
-
-          vel(1, iel) = vel(1, iel)                                             &
-               + unsrom*(                                                &
-                 dttens(1,iel)*(dfrcxt(1, iel)-trav(1,iel))     &
-               + dttens(4,iel)*(dfrcxt(2, iel)-trav(2,iel))     &
-               + dttens(6,iel)*(dfrcxt(3, iel)-trav(3,iel))     &
-               )
-          vel(2, iel) = vel(2, iel)                                             &
-               + unsrom*(                                                &
-                 dttens(4,iel)*(dfrcxt(1, iel)-trav(1,iel))     &
-               + dttens(2,iel)*(dfrcxt(2, iel)-trav(2,iel))     &
-               + dttens(5,iel)*(dfrcxt(3, iel)-trav(3,iel))     &
-               )
-          vel(3, iel) = vel(3, iel)                                             &
-               + unsrom*(                                                &
-                 dttens(6,iel)*(dfrcxt(1 ,iel)-trav(1,iel))     &
-               + dttens(5,iel)*(dfrcxt(2 ,iel)-trav(2,iel))     &
-               + dttens(3,iel)*(dfrcxt(3 ,iel)-trav(3,iel))     &
-               )
-        enddo
-      endif
-
-      ! Update external forces for the computation of the gradients
-      !$omp parallel do
-      do iel=1,ncel
-        frcxt(1 ,iel) = frcxt(1 ,iel) + dfrcxt(1 ,iel)
-        frcxt(2 ,iel) = frcxt(2 ,iel) + dfrcxt(2 ,iel)
-        frcxt(3 ,iel) = frcxt(3 ,iel) + dfrcxt(3 ,iel)
-      enddo
-      if (irangp.ge.0.or.iperio.eq.1) then
-        call synvin(frcxt)
-      endif
-      ! Update of the Dirichlet boundary conditions on the
-      ! pressure for the outlet
-      call field_get_coefa_s(ivarfl(ipr), coefa_p)
-      !$omp parallel do if(nfabor > thr_n_min)
-      do ifac = 1, nfabor
-        if (isostd(ifac).eq.1) then
-          coefa_p(ifac) = coefa_p(ifac) + coefa_dp(ifac)
-        endif
-      enddo
-
-
-      ! Standard handling of hydrostatic pressure
-      !------------------------------------------
-    else
-
-      ! Scalar diffusion for the pressure
-      if (vcopt_p%idften.eq.1) then
 
       !$omp parallel do private(dtsrom, isou)
       do iel = 1, ncel
@@ -996,207 +563,15 @@ if (ippmod(icompf).lt.0) then
         do isou = 1, 3
           vel(isou,iel) = vel(isou,iel) - dtsrom*trav(isou,iel)
         enddo
-       enddo
-
-      ! Tensorial diffusion for the pressure
-      else if (vcopt_p%idften.eq.6) then
-
-        !$omp parallel do private(unsrom)
-        do iel = 1, ncel
-          unsrom = thetap/crom(iel)
-
-          vel(1, iel) = vel(1, iel)                              &
-                      - unsrom*(                                 &
-                                 dttens(1,iel)*(trav(1,iel))     &
-                               + dttens(4,iel)*(trav(2,iel))     &
-                               + dttens(6,iel)*(trav(3,iel))     &
-                               )
-          vel(2, iel) = vel(2, iel)                              &
-                      - unsrom*(                                 &
-                                 dttens(4,iel)*(trav(1,iel))     &
-                               + dttens(2,iel)*(trav(2,iel))     &
-                               + dttens(5,iel)*(trav(3,iel))     &
-                               )
-          vel(3, iel) = vel(3, iel)                              &
-                      - unsrom*(                                 &
-                                 dttens(6,iel)*(trav(1,iel))     &
-                               + dttens(5,iel)*(trav(2,iel))     &
-                               + dttens(3,iel)*(trav(3,iel))     &
-                               )
-        enddo
-
-      endif
-    endif
+      enddo
   endif
 
 endif
 
-! In the ALE framework, we add the mesh velocity
-if (iale.eq.1) then
 
-  call field_get_val_v(ivarfl(iuma), mshvel)
 
-  call field_get_val_prev_v(fdiale, disala)
 
-  ! One temporary array needed for internal faces, in case some internal vertices
-  !  are moved directly by the user
-  allocate(intflx(nfac), bouflx(ndimfb))
 
-  itypfl = 1
-  init   = 1
-  inc    = 1
-  iflmb0 = 1
-  call field_get_key_struct_var_cal_opt(ivarfl(iuma), vcopt)
-  nswrgp = vcopt%nswrgr
-  imligp = vcopt%imligr
-  iwarnp = vcopt%iwarni
-  epsrgp = vcopt%epsrgr
-  climgp = vcopt%climgr
-
-  call field_get_coefa_v(ivarfl(iuma), claale)
-  call field_get_coefb_v(ivarfl(iuma), clbale)
-
-  call inimav &
-( ivarfl(iuma)    , itypfl ,                                     &
-  iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-  iwarnp ,                                                       &
-  epsrgp , climgp ,                                              &
-  crom, brom,                                                    &
-  mshvel ,                                                       &
-  claale , clbale ,                                              &
-  intflx , bouflx )
-
-  ! Here we need of the opposite of the mesh velocity.
-  !$omp parallel do if(nfabor > thr_n_min)
-  do ifac = 1, nfabor
-    bmasfl(ifac) = bmasfl(ifac) - bouflx(ifac)
-  enddo
-
-  !$omp parallel do private(ddepx, ddepy, ddepz, icpt, ii, inod, &
-  !$omp                     iel1, iel2, dtfac, rhofac)
-  do ifac = 1, nfac
-    ddepx = 0.d0
-    ddepy = 0.d0
-    ddepz = 0.d0
-    icpt  = 0
-    do ii = ipnfac(ifac),ipnfac(ifac+1)-1
-      inod = nodfac(ii)
-      icpt = icpt + 1
-      ddepx = ddepx + xyznod(1,inod)-xyzno0(1,inod) - disala(1,inod)
-      ddepy = ddepy + xyznod(2,inod)-xyzno0(2,inod) - disala(2,inod)
-      ddepz = ddepz + xyznod(3,inod)-xyzno0(3,inod) - disala(3,inod)
-    enddo
-    ! Compute the mass flux using the nodes displacement
-    if (iflxmw.eq.0) then
-      ! For inner vertices, the mass flux due to the mesh displacement is
-      !  recomputed from the nodes displacement
-      iel1 = ifacel(1,ifac)
-      iel2 = ifacel(2,ifac)
-      dtfac = 0.5d0*(dt(iel1) + dt(iel2))
-      rhofac = 0.5d0*(crom(iel1) + crom(iel2))
-      imasfl(ifac) = imasfl(ifac) - rhofac*(      &
-            ddepx*surfac(1,ifac)                                &
-           +ddepy*surfac(2,ifac)                                &
-           +ddepz*surfac(3,ifac) )/dtfac/icpt
-    else
-      imasfl(ifac) = imasfl(ifac) - intflx(ifac)
-    endif
-  enddo
-
-  ! Free memory
-  deallocate(intflx, bouflx)
-
-endif
-
-!FIXME for me we should do that before predvv
-! Ajout de la vitesse du solide dans le flux convectif,
-! si le maillage est mobile (solide rigide)
-! En turbomachine, on connait exactement la vitesse de maillage a ajouter
-if (imobil.eq.1 .or. iturbo.eq.1 .or. iturbo.eq.2) then
-
-  if (iturbo.eq.1.or.iturbo.eq.2) call dmtmps(t3)
-
-  !$omp parallel do private(iel1, iel2, rhofac, vr1, vr2)
-  do ifac = 1, nfac
-    iel1 = ifacel(1,ifac)
-    iel2 = ifacel(2,ifac)
-    if (irotce(iel1).ne.0 .or. irotce(iel2).ne.0) then
-
-      rhofac = 0.5d0*(crom(iel1) + crom(iel2))
-      call rotation_velocity(irotce(iel1), cdgfac(:,ifac), vr1)
-      call rotation_velocity(irotce(iel2), cdgfac(:,ifac), vr2)
-
-      imasfl(ifac) = imasfl(ifac) - 0.5d0 *rhofac*(         &
-                          surfac(1,ifac)*(vr1(1) + vr2(1))  &
-                        + surfac(2,ifac)*(vr1(2) + vr2(2))  &
-                        + surfac(3,ifac)*(vr1(3) + vr2(3)) )
-    endif
-  enddo
-  !$omp parallel do private(iel, rhofac, vr) if(nfabor > thr_n_min)
-  do ifac = 1, nfabor
-    iel = ifabor(ifac)
-    if (irotce(iel).ne.0) then
-
-      rhofac = brom(ifac)
-      call rotation_velocity(irotce(iel), cdgfbo(:,ifac), vr)
-
-      bmasfl(ifac) = bmasfl(ifac) - rhofac*( surfbo(1,ifac)*vr(1) &
-                                           + surfbo(2,ifac)*vr(2) &
-                                           + surfbo(3,ifac)*vr(3) )
-    endif
-  enddo
-
-  if (iturbo.eq.1.or.iturbo.eq.2) call dmtmps(t4)
-
-  rs_ell(2) = rs_ell(2) + t4-t3
-
-endif
-
-!===============================================================================
-! 10. Cavitation: void fraction solving and update the mixture density/viscosity
-!      and mass flux (resopv solved the convective flux of void fraction, divU)
-!===============================================================================
-
-if (ivofmt.ge.0) then
-
-  ! Void fraction solving
-
-  call resvoi(dt)
-
-  ! Halo synchronization
-
-  call synsca(cvar_voidf)
-
-  ! Get the void fraction boundary conditions
-
-  call field_get_coefa_s(ivarfl(ivolf2), coavoi)
-  call field_get_coefb_s(ivarfl(ivolf2), cobvoi)
-
-  ! Get the convective flux of the void fraction
-
-  call field_get_key_int(ivarfl(ivolf2), kimasf, iflvoi)
-  call field_get_key_int(ivarfl(ivolf2), kbmasf, iflvob)
-  call field_get_val_s(iflvoi, ivoifl)
-  call field_get_val_s(iflvob, bvoifl)
-
-  ! Update mixture density/viscosity and mass flux
-
-  call vof_update_phys_prop &
- ( cvar_voidf, coavoi, cobvoi, ivoifl, bvoifl, &
-   crom, brom, imasfl, bmasfl )
-
-  ! Verbosity
-
-  if (mod(ntcabs,ntlist).eq.0.and.iterns.eq.nterup) then
-
-    call field_get_val_prev_s(icrom, croma)
-
-    call vof_print_mass_budget &
-   ( crom, croma, brom, dt, imasfl, bmasfl )
-
-  endif
-
-endif
 
 !===============================================================================
 ! 11. Compute error estimators for correction step and the global algo
@@ -1219,19 +594,8 @@ if (iestim(iescor).ge.0.or.iestim(iestot).ge.0) then
 
   ! --- Vitesse
 
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(vel)
-  endif
 
   !  -- Pression
-
-  if (iescal(iestot).gt.0) then
-
-    if (irangp.ge.0.or.iperio.eq.1) then
-      call synsca(cvar_pr)
-    endif
-
-  endif
 
   ! ---> CALCUL DU FLUX DE MASSE DEDUIT DE LA VITESSE REACTUALISEE
 
