@@ -375,41 +375,8 @@ endif
   call field_gradient_potential(ivarfl(ipr), iprev, imrgra, inc,    &
                                 iccocg, iphydr,                     &
                                 frcxt, grad)
-endif
 
-!    Calcul des efforts aux parois (partie 2/5), si demande
-!    La pression a la face est calculee comme dans gradrc/gradmc
-!    et on la transforme en pression totale
-!    On se limite a la premiere iteration (pour faire simple par
-!      rapport a la partie issue de condli, hors boucle)
-print*,"iforbr", iforbr
-if (iforbr.ge.0 .and. iterns.eq.1) then
-  call field_get_coefa_s (ivarfl(ipr), coefa_p)
-  call field_get_coefb_s (ivarfl(ipr), coefb_p)
-  do ifac = 1, nfabor
-    iel = ifabor(ifac)
-    diipbx = diipb(1,ifac)
-    diipby = diipb(2,ifac)
-    diipbz = diipb(3,ifac)
-    pip = cvara_pr(iel) &
-        + diipbx*grad(1,iel) + diipby*grad(2,iel) + diipbz*grad(3,iel)
-    pfac = coefa_p(ifac) +coefb_p(ifac)*pip
-    pfac1= cvara_pr(iel)                                              &
-         +(cdgfbo(1,ifac)-xyzcen(1,iel))*grad(1,iel)              &
-         +(cdgfbo(2,ifac)-xyzcen(2,iel))*grad(2,iel)              &
-         +(cdgfbo(3,ifac)-xyzcen(3,iel))*grad(3,iel)
-    pfac = coefb_p(ifac)*(vcopt_p%extrag*pfac1                       &
-         +(1.d0-vcopt_p%extrag)*pfac)                                &
-         +(1.d0-coefb_p(ifac))*pfac                               &
-         + ro0*(gx*(cdgfbo(1,ifac)-xyzp0(1))                      &
-         + gy*(cdgfbo(2,ifac)-xyzp0(2))                           &
-         + gz*(cdgfbo(3,ifac)-xyzp0(3)) )                         &
-         - pred0
-    do isou = 1, 3
-      forbr(isou,ifac) = forbr(isou,ifac) + pfac*surfbo(isou,ifac)
-    enddo
-  enddo
-endif
+
 
 !-------------------------------------------------------------------------------
 ! ---> RESIDU DE NORMALISATION POUR RESOLP
@@ -436,9 +403,6 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
     trav(3,iel) = grad(3,iel)*dtsrom
   enddo
 
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(trav)
-  endif
 
 !     Calcul de rho dt/rho*grad P.n aux faces
 !       Pour gagner du temps, on ne reconstruit pas.
@@ -499,59 +463,23 @@ endif
 !         chaque fois (ie on pourrait le passer dans trava) mais ce n'est
 !         pas cher.
 if (iappel.eq.1) then
-  print*,"ippmod(icompf), iphydr", ippmod(icompf), iphydr
-  if (iphydr.eq.1) then
-    do iel = 1, ncel
-      trav(1,iel) = (frcxt(1 ,iel) - grad(1,iel)) * cell_f_vol(iel)
-      trav(2,iel) = (frcxt(2 ,iel) - grad(2,iel)) * cell_f_vol(iel)
-      trav(3,iel) = (frcxt(3 ,iel) - grad(3,iel)) * cell_f_vol(iel)
-    enddo
-  else if (iphydr.eq.2) then
-    do iel = 1, ncel
-      rom = crom(iel)
-      trav(1,iel) = (rom*gx - grdphd(1,iel) - grad(1,iel)) * cell_f_vol(iel)
-      trav(2,iel) = (rom*gy - grdphd(2,iel) - grad(2,iel)) * cell_f_vol(iel)
-      trav(3,iel) = (rom*gz - grdphd(3,iel) - grad(3,iel)) * cell_f_vol(iel)
-    enddo
-  else if (ippmod(icompf).ge.0) then
-    do iel = 1, ncel
-      rom = crom(iel)
-      trav(1,iel) = (rom*gx - grad(1,iel)) * cell_f_vol(iel)
-      trav(2,iel) = (rom*gy - grad(2,iel)) * cell_f_vol(iel)
-      trav(3,iel) = (rom*gz - grad(3,iel)) * cell_f_vol(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      drom = (crom(iel)-ro0)
-      trav(1,iel) = (drom*gx - grad(1,iel) ) * cell_f_vol(iel)
-      trav(2,iel) = (drom*gy - grad(2,iel) ) * cell_f_vol(iel)
-      trav(3,iel) = (drom*gz - grad(3,iel) ) * cell_f_vol(iel)
-    enddo
-  endif
+  do iel = 1, ncel
+    drom = (crom(iel)-ro0)
+    trav(1,iel) = (drom*gx - grad(1,iel) ) * cell_f_vol(iel)
+    trav(2,iel) = (drom*gy - grad(2,iel) ) * cell_f_vol(iel)
+    trav(3,iel) = (drom*gz - grad(3,iel) ) * cell_f_vol(iel)
+  enddo
 
 else if(iappel.eq.2) then
 
-  if (iphydr.eq.1) then
-    do iel = 1, ncel
-      trav(1,iel) = trav(1,iel) + (frcxt(1 ,iel) - grad(1,iel))*cell_f_vol(iel)
-      trav(2,iel) = trav(2,iel) + (frcxt(2 ,iel) - grad(2,iel))*cell_f_vol(iel)
-      trav(3,iel) = trav(3,iel) + (frcxt(3 ,iel) - grad(3,iel))*cell_f_vol(iel)
-    enddo
-  else if (iphydr.eq.2) then
-    do iel = 1, ncel
-      rom = crom(iel)
-      trav(1,iel) = trav(1,iel) + (rom*gx - grdphd(1,iel) - grad(1,iel))*cell_f_vol(iel)
-      trav(2,iel) = trav(2,iel) + (rom*gy - grdphd(2,iel) - grad(2,iel))*cell_f_vol(iel)
-      trav(3,iel) = trav(3,iel) + (rom*gz - grdphd(3,iel) - grad(3,iel))*cell_f_vol(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      drom = (crom(iel)-ro0)
-      trav(1,iel) = trav(1,iel) + (drom*gx - grad(1,iel))*cell_f_vol(iel)
-      trav(2,iel) = trav(2,iel) + (drom*gy - grad(2,iel))*cell_f_vol(iel)
-      trav(3,iel) = trav(3,iel) + (drom*gz - grad(3,iel))*cell_f_vol(iel)
-    enddo
-  endif
+  
+  do iel = 1, ncel
+    drom = (crom(iel)-ro0)
+    trav(1,iel) = trav(1,iel) + (drom*gx - grad(1,iel))*cell_f_vol(iel)
+    trav(2,iel) = trav(2,iel) + (drom*gy - grad(2,iel))*cell_f_vol(iel)
+    trav(3,iel) = trav(3,iel) + (drom*gz - grad(3,iel))*cell_f_vol(iel)
+  enddo
+ 
 
 endif
 
@@ -586,7 +514,7 @@ deallocate(grad)
 if (iterns.eq.1) then
 
   ! Si on   extrapole     les T.S. : -theta*valeur precedente
-  print*,"isno2t", isno2t
+
   if (isno2t.gt.0) then
     ! S'il n'y a qu'une    iter : TRAV  incremente
     if (nterup.eq.1) then
@@ -692,22 +620,15 @@ endif
 
 !-------------------------------------------------------------------------------
 ! ---> Face diffusivity for the velocity
-
 if (vcopt_u%idiff.ge. 1) then
 
   call field_get_val_s(iviscl, viscl)
   call field_get_val_s(ivisct, visct)
 
-  print*, "itytur", itytur
-  if (itytur.eq.3) then
-    do iel = 1, ncel
-      w1(iel) = viscl(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
-    enddo
-  endif
+  do iel = 1, ncel
+    w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
+  enddo
+
 
   ! Scalar diffusivity (Default)
 
@@ -792,7 +713,6 @@ enddo
 ! at the first iteration only.
 if (iterns.eq.1) then
 
-  print*, "iihmpr", iihmpr
   if (iihmpr.eq.1) then
     call uitsnv (vel, tsexp, tsimp)
   endif
@@ -1166,9 +1086,6 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
 
   ! Compute div(rho u*)
 
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(vel)
-  endif
 
   ! To save time, no space reconstruction
   itypfl = 1
