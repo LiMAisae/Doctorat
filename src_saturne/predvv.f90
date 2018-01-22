@@ -232,7 +232,7 @@ double precision, dimension(:,:,:), allocatable :: tsimp
 double precision, allocatable, dimension(:,:) :: viscce
 double precision, dimension(:,:), allocatable :: vect
 double precision, dimension(:), allocatable :: xinvro
-double precision, dimension(:), pointer :: brom, crom, croma, pcrom
+double precision, dimension(:), pointer :: brom, crom, croma, pcrom,crom_prev2
 double precision, dimension(:), pointer :: coefa_k, coefb_k
 double precision, dimension(:), pointer :: coefa_p, coefb_p
 double precision, dimension(:,:), allocatable :: rij
@@ -283,6 +283,7 @@ call field_get_val_s(icrom, crom)
 ! Reperage de rho^n en cas d'extrapolation
 if (iroext.gt.0.or.idilat.gt.1) then
   call field_get_val_prev_s(icrom, croma)
+  call field_get_val_s(icroaa,crom_prev2)
 endif
 
 
@@ -290,41 +291,9 @@ if (iappel.eq.2) then
   if (iforbr.ge.0 .and. iterns.eq.1 .or. ivofmt.ge.0) then
     call field_get_val_s(ivarfl(ipr), cvara_pr)
   endif
-  if(iforbr.ge.0 .and. iterns.eq.1                                          &
-     .and. (itytur.eq.2 .or. itytur.eq.5 .or. iturb.eq.60) .and. igrhok.eq.1) then
-    call field_get_val_s(ivarfl(ik), cvara_k)
-  endif
-  if (itytur.eq.3.and.iterns.eq.1) then
-    if (irijco.eq.1) then
-      call field_get_val_v(ivarfl(irij), cvara_rij)
-    else
-      call field_get_val_s(ivarfl(ir11), cvara_r11)
-      call field_get_val_s(ivarfl(ir22), cvara_r22)
-      call field_get_val_s(ivarfl(ir33), cvara_r33)
-      call field_get_val_s(ivarfl(ir12), cvara_r12)
-      call field_get_val_s(ivarfl(ir23), cvara_r23)
-      call field_get_val_s(ivarfl(ir13), cvara_r13)
-    endif
-  endif
 else
   if (iforbr.ge.0 .and. iterns.eq.1 .or. ivofmt.ge.0) then
     call field_get_val_prev_s(ivarfl(ipr), cvara_pr)
-  endif
-  if(iforbr.ge.0 .and. iterns.eq.1                                          &
-     .and. (itytur.eq.2 .or. itytur.eq.5 .or. iturb.eq.60) .and. igrhok.eq.1) then
-      call field_get_val_prev_s(ivarfl(ik), cvara_k)
-  endif
-  if (itytur.eq.3.and.iterns.eq.1) then
-    if (irijco.eq.1) then
-      call field_get_val_v(ivarfl(irij), cvara_rij)
-    else
-      call field_get_val_s(ivarfl(ir11), cvara_r11)
-      call field_get_val_s(ivarfl(ir22), cvara_r22)
-      call field_get_val_s(ivarfl(ir33), cvara_r33)
-      call field_get_val_s(ivarfl(ir12), cvara_r12)
-      call field_get_val_s(ivarfl(ir23), cvara_r23)
-      call field_get_val_s(ivarfl(ir13), cvara_r13)
-    endif
   endif
 endif
 
@@ -339,16 +308,6 @@ else
   c_st_vel => null()
 endif
 
-! Coefficient of the "Coriolis-type" term
-if (icorio.eq.1) then
-  ! Relative velocity formulation
-  ccorio = 2.d0
-else if (iturbo.eq.1) then
-  ! Mixed relative/absolute velocity formulation
-  ccorio = 1.d0
-else
-  ccorio = 0.d0
-endif
 
 !===============================================================================
 ! 2. Potential forces (pressure gradient and gravity)
@@ -372,75 +331,11 @@ else
   iprev = 1
 endif
 
-if (ivofmt.lt.0) then
   call field_gradient_potential(ivarfl(ipr), iprev, imrgra, inc,    &
                                 iccocg, iphydr,                     &
                                 frcxt, grad)
 
-else
 
-  ! VOF algorithm: consistency of the gradient
-  ! with the diffusive flux scheme of the correction step
-
-  call field_get_coefa_s (ivarfl(ipr), coefa_p)
-  call field_get_coefb_s (ivarfl(ipr), coefb_p)
-
-  allocate(xinvro(ncelet))
-
-  do iel = 1, ncel
-    xinvro(iel) = 1.d0/crom(iel)
-  enddo
-
-  iccocg = 1
-  inc    = 1
-  nswrgp = vcopt_p%nswrgr
-  imligp = vcopt_p%imligr
-  iwarnp = vcopt_p%iwarni
-  epsrgp = vcopt_p%epsrgr
-  climgp = vcopt_p%climgr
-  extrap = vcopt_p%extrag
-
-  call gradient_weighted_s(ivarfl(ipr), imrgra, inc, iccocg, nswrgp, imligp,  &
-                           iwarnp, epsrgp, climgp, extrap,                    &
-                           cvara_pr, xinvro, coefa_p, coefb_p,                &
-                           grad )
-
-  deallocate(xinvro)
-
-endif
-
-!    Calcul des efforts aux parois (partie 2/5), si demande
-!    La pression a la face est calculee comme dans gradrc/gradmc
-!    et on la transforme en pression totale
-!    On se limite a la premiere iteration (pour faire simple par
-!      rapport a la partie issue de condli, hors boucle)
-if (iforbr.ge.0 .and. iterns.eq.1) then
-  call field_get_coefa_s (ivarfl(ipr), coefa_p)
-  call field_get_coefb_s (ivarfl(ipr), coefb_p)
-  do ifac = 1, nfabor
-    iel = ifabor(ifac)
-    diipbx = diipb(1,ifac)
-    diipby = diipb(2,ifac)
-    diipbz = diipb(3,ifac)
-    pip = cvara_pr(iel) &
-        + diipbx*grad(1,iel) + diipby*grad(2,iel) + diipbz*grad(3,iel)
-    pfac = coefa_p(ifac) +coefb_p(ifac)*pip
-    pfac1= cvara_pr(iel)                                              &
-         +(cdgfbo(1,ifac)-xyzcen(1,iel))*grad(1,iel)              &
-         +(cdgfbo(2,ifac)-xyzcen(2,iel))*grad(2,iel)              &
-         +(cdgfbo(3,ifac)-xyzcen(3,iel))*grad(3,iel)
-    pfac = coefb_p(ifac)*(vcopt_p%extrag*pfac1                       &
-         +(1.d0-vcopt_p%extrag)*pfac)                                &
-         +(1.d0-coefb_p(ifac))*pfac                               &
-         + ro0*(gx*(cdgfbo(1,ifac)-xyzp0(1))                      &
-         + gy*(cdgfbo(2,ifac)-xyzp0(2))                           &
-         + gz*(cdgfbo(3,ifac)-xyzp0(3)) )                         &
-         - pred0
-    do isou = 1, 3
-      forbr(isou,ifac) = forbr(isou,ifac) + pfac*surfbo(isou,ifac)
-    enddo
-  enddo
-endif
 
 !-------------------------------------------------------------------------------
 ! ---> RESIDU DE NORMALISATION POUR RESOLP
@@ -450,7 +345,7 @@ endif
 !       pression (sinon a convergence, on tend vers 0)
 !       Represente les termes que la pression doit equilibrer
 !     On calcule ici div(rho dt/rho gradP^(n)) et on complete a la fin
-!       avec  div(rho u*)
+!       avec  div(rho u*)crom_prev2
 !     Pour grad P^(n) on suppose que des CL de Neumann homogenes
 !       s'appliquent partout : on peut donc utiliser les CL de la
 !       vitesse pour u*+dt/rho gradP^(n). Comme on calcule en deux fois,
@@ -467,9 +362,6 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
     trav(3,iel) = grad(3,iel)*dtsrom
   enddo
 
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(trav)
-  endif
 
 !     Calcul de rho dt/rho*grad P.n aux faces
 !       Pour gagner du temps, on ne reconstruit pas.
@@ -502,63 +394,15 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
   init = 1
   call divmas(init,viscf,viscb,xnormp)
 
-!-- Volumic Gamma source term adding for volumic mass flow rate
-  if (ncesmp.gt.0) then
-    do ii = 1, ncesmp
-      iel = icetsm(ii)
-      xnormp(iel) = xnormp(iel) - cell_f_vol(iel)*smacel(ii,ipr)
-    enddo
-  endif
-
-!-- Surface Gamma source term adding for surface condensation modelling
-  if (nfbpcd.gt.0) then
-    do ii = 1, nfbpcd
-      ifac= ifbpcd(ii)
-      iel = ifabor(ifac)
-      xnormp(iel) = xnormp(iel) - surfbn(ifac) * spcond(ii,ipr)
-    enddo
-  endif
-
-! --- volume Gamma source term adding for volume condensation modelling
-  if (icondv.eq.0) then
-    allocate(surfbm(ncelet))
-    surfbm(:) = 0.d0
-
-    do ii = 1, ncmast
-      iel= ltmast(ii)
-      surfbm(iel) = s_metal*volume(iel)/voltot
-      xnormp(iel) = xnormp(iel)  - surfbm(iel)*svcond(iel,ipr)
-    enddo
-
-    deallocate(surfbm)
-  endif
-
-  if (idilat.ge.4) then
-    call field_get_val_s(iustdy(itsrho), cpro_tsrho)
-  endif
 
   ! Dilatable mass conservative algorithm
   if (idilat.eq.2) then
     do iel = 1, ncel
-      drom = crom(iel) - croma(iel)
+      !drom = crom(iel) - croma(iel)
+      drom = (3.d0*crom(iel)-4.d0*croma(iel)+crom_prev2(iel))/2.d0 
       xnormp(iel) = xnormp(iel) + drom*cell_f_vol(iel)/dt(iel)
     enddo
-  ! Semi-analytic weakly compressible algorithm add + 1/rho Drho/Dt
-  else if (idilat.eq.4)then
-    do iel = 1, ncel
-      xnormp(iel) = xnormp(iel) + cpro_tsrho(iel)/crom(iel)
-    enddo
-  else if (idilat.eq.5) then
-    do iel = 1, ncel
-      xnormp(iel) = xnormp(iel) + cpro_tsrho(iel)
-    enddo
-  endif
 
-  ! Cavitation source term
-  if (icavit.gt.0) then
-    do iel = 1, ncel
-      xnormp(iel) = xnormp(iel) -cell_f_vol(iel)*gamcav(iel)*(1.d0/rho2 - 1.d0/rho1)
-    enddo
   endif
 
 !     On conserve XNORMP, on complete avec u* a la fin et
@@ -579,58 +423,23 @@ endif
 !         chaque fois (ie on pourrait le passer dans trava) mais ce n'est
 !         pas cher.
 if (iappel.eq.1) then
-  if (iphydr.eq.1) then
-    do iel = 1, ncel
-      trav(1,iel) = (frcxt(1 ,iel) - grad(1,iel)) * cell_f_vol(iel)
-      trav(2,iel) = (frcxt(2 ,iel) - grad(2,iel)) * cell_f_vol(iel)
-      trav(3,iel) = (frcxt(3 ,iel) - grad(3,iel)) * cell_f_vol(iel)
-    enddo
-  else if (iphydr.eq.2) then
-    do iel = 1, ncel
-      rom = crom(iel)
-      trav(1,iel) = (rom*gx - grdphd(1,iel) - grad(1,iel)) * cell_f_vol(iel)
-      trav(2,iel) = (rom*gy - grdphd(2,iel) - grad(2,iel)) * cell_f_vol(iel)
-      trav(3,iel) = (rom*gz - grdphd(3,iel) - grad(3,iel)) * cell_f_vol(iel)
-    enddo
-  else if (ippmod(icompf).ge.0) then
-    do iel = 1, ncel
-      rom = crom(iel)
-      trav(1,iel) = (rom*gx - grad(1,iel)) * cell_f_vol(iel)
-      trav(2,iel) = (rom*gy - grad(2,iel)) * cell_f_vol(iel)
-      trav(3,iel) = (rom*gz - grad(3,iel)) * cell_f_vol(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      drom = (crom(iel)-ro0)
-      trav(1,iel) = (drom*gx - grad(1,iel) ) * cell_f_vol(iel)
-      trav(2,iel) = (drom*gy - grad(2,iel) ) * cell_f_vol(iel)
-      trav(3,iel) = (drom*gz - grad(3,iel) ) * cell_f_vol(iel)
-    enddo
-  endif
+  do iel = 1, ncel
+    drom = (crom(iel)-ro0)
+    trav(1,iel) = (drom*gx - grad(1,iel) ) * cell_f_vol(iel)
+    trav(2,iel) = (drom*gy - grad(2,iel) ) * cell_f_vol(iel)
+    trav(3,iel) = (drom*gz - grad(3,iel) ) * cell_f_vol(iel)
+  enddo
 
 else if(iappel.eq.2) then
 
-  if (iphydr.eq.1) then
-    do iel = 1, ncel
-      trav(1,iel) = trav(1,iel) + (frcxt(1 ,iel) - grad(1,iel))*cell_f_vol(iel)
-      trav(2,iel) = trav(2,iel) + (frcxt(2 ,iel) - grad(2,iel))*cell_f_vol(iel)
-      trav(3,iel) = trav(3,iel) + (frcxt(3 ,iel) - grad(3,iel))*cell_f_vol(iel)
-    enddo
-  else if (iphydr.eq.2) then
-    do iel = 1, ncel
-      rom = crom(iel)
-      trav(1,iel) = trav(1,iel) + (rom*gx - grdphd(1,iel) - grad(1,iel))*cell_f_vol(iel)
-      trav(2,iel) = trav(2,iel) + (rom*gy - grdphd(2,iel) - grad(2,iel))*cell_f_vol(iel)
-      trav(3,iel) = trav(3,iel) + (rom*gz - grdphd(3,iel) - grad(3,iel))*cell_f_vol(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      drom = (crom(iel)-ro0)
-      trav(1,iel) = trav(1,iel) + (drom*gx - grad(1,iel))*cell_f_vol(iel)
-      trav(2,iel) = trav(2,iel) + (drom*gy - grad(2,iel))*cell_f_vol(iel)
-      trav(3,iel) = trav(3,iel) + (drom*gz - grad(3,iel))*cell_f_vol(iel)
-    enddo
-  endif
+  
+  do iel = 1, ncel
+    drom = (crom(iel)-ro0)
+    trav(1,iel) = trav(1,iel) + (drom*gx - grad(1,iel))*cell_f_vol(iel)
+    trav(2,iel) = trav(2,iel) + (drom*gy - grad(2,iel))*cell_f_vol(iel)
+    trav(3,iel) = trav(3,iel) + (drom*gz - grad(3,iel))*cell_f_vol(iel)
+  enddo
+ 
 
 endif
 
@@ -665,6 +474,7 @@ deallocate(grad)
 if (iterns.eq.1) then
 
   ! Si on   extrapole     les T.S. : -theta*valeur precedente
+
   if (isno2t.gt.0) then
     ! S'il n'y a qu'une    iter : TRAV  incremente
     if (nterup.eq.1) then
@@ -712,10 +522,6 @@ if (iappel.eq.1) then
   if (idilat.gt.1.or.ippmod(icompf).ge.0) then
     call field_get_val_prev_s(icrom, pcrom)
 
-  ! VOF algorithm
-  else if (ivofmt.ge.0) then
-    call field_get_val_s(icroaa, pcrom)
-
   ! Standard algo
   else
 
@@ -744,91 +550,6 @@ else
 endif
 
 !-------------------------------------------------------------------------------
-! ---> 2/3 RHO * GRADIENT DE K SI k-epsilon ou k-omega
-!      NB : ON NE PREND PAS LE GRADIENT DE (RHO K), MAIS
-!           CA COMPLIQUERAIT LA GESTION DES CL ...
-!     On peut se demander si l'extrapolation en temps sert a
-!       quelquechose
-
-!     Ce terme explicite est calcule une seule fois,
-!       a la premiere iter sur navsto : il est stocke dans un champ si on
-!       doit l'extrapoler en temps ; il va dans TRAVA si on n'extrapole
-!       pas mais qu'on itere sur navsto. Il va dans TRAV si on
-!       n'extrapole pas et qu'on n'itere pas sur navsto.
-if(     (itytur.eq.2 .or. itytur.eq.5 .or. iturb.eq.60) &
-   .and. igrhok.eq.1 .and. iterns.eq.1) then
-
-  ! Allocate a work array for the gradient calculation
-  allocate(grad(3,ncelet))
-
-  iccocg = 1
-  iprev  = 1
-  inc    = 1
-
-  call field_gradient_scalar(ivarfl(ik), iprev, imrgra, inc,      &
-                             iccocg,                              &
-                             grad)
-
-  d2s3 = 2.d0/3.d0
-
-  ! Si on extrapole les termes source en temps
-  if (isno2t.gt.0) then
-    ! Calcul de rho^n grad k^n      si rho non extrapole
-    !           rho^n grad k^n      si rho     extrapole
-
-    call field_get_val_s(icrom, crom)
-    call field_get_val_prev_s(icrom, croma)
-    do iel = 1, ncel
-      romvom = -croma(iel)*cell_f_vol(iel)*d2s3
-      do isou = 1, 3
-        c_st_vel(isou,iel) = c_st_vel(isou,iel)+grad(isou,iel)*romvom
-      enddo
-    enddo
-  ! Si on n'extrapole pas les termes sources en temps : TRAV ou TRAVA
-  else
-    if(nterup.eq.1) then
-      do iel = 1, ncel
-        romvom = -crom(iel)*cell_f_vol(iel)*d2s3
-        do isou = 1, 3
-          trav(isou,iel) = trav(isou,iel) + grad(isou,iel) * romvom
-        enddo
-      enddo
-    else
-      do iel = 1, ncel
-        romvom = -crom(iel)*cell_f_vol(iel)*d2s3
-        do isou = 1, 3
-          trava(isou,iel) = trava(isou,iel) + grad(isou,iel) * romvom
-        enddo
-      enddo
-    endif
-  endif
-
-  ! Calcul des efforts aux parois (partie 3/5), si demande
-  if (iforbr.ge.0) then
-    call field_get_coefa_s (ivarfl(ik), coefa_k)
-    call field_get_coefb_s (ivarfl(ik), coefb_k)
-    do ifac = 1, nfabor
-      iel = ifabor(ifac)
-      diipbx = diipb(1,ifac)
-      diipby = diipb(2,ifac)
-      diipbz = diipb(3,ifac)
-      xkb = cvara_k(iel) + diipbx*grad(1,iel)                      &
-           + diipby*grad(2,iel) + diipbz*grad(3,iel)
-      xkb = coefa_k(ifac)+coefb_k(ifac)*xkb
-      xkb = d2s3*crom(iel)*xkb
-      do isou = 1, 3
-        forbr(isou,ifac) = forbr(isou,ifac) + xkb*surfbo(isou,ifac)
-      enddo
-    enddo
-  endif
-
-  ! Free memory
-  deallocate(grad)
-
-endif
-
-
-!-------------------------------------------------------------------------------
 ! ---> Transpose of velocity gradient in the diffusion term
 
 !     These terms are taken into account in bilscv.
@@ -841,370 +562,26 @@ if (ivisse.eq.1) then
 endif
 
 !-------------------------------------------------------------------------------
-! ---> Head losses
-!      (if iphydr=1 this term has already been taken into account)
-
-! ---> Explicit part
-if ((ncepdp.gt.0).and.(iphydr.ne.1)) then
-
-  ! Les termes diagonaux sont places dans TRAV ou TRAVA,
-  !   La prise en compte de uvwk a partir de la seconde iteration
-  !   est faite directement dans coditv.
-  if (iterns.eq.1) then
-
-    ! On utilise temporairement TRAV comme tableau de travail.
-    ! Son contenu est stocke dans W7, W8 et W9 jusqu'apres tspdcv
-    do iel = 1,ncel
-      w7(iel) = trav(1,iel)
-      w8(iel) = trav(2,iel)
-      w9(iel) = trav(3,iel)
-      trav(1,iel) = 0.d0
-      trav(2,iel) = 0.d0
-      trav(3,iel) = 0.d0
-    enddo
-
-    call tspdcv(ncepdp, icepdc, vela, ckupdc, trav)
-
-    ! Si on itere sur navsto, on utilise TRAVA ; sinon TRAV
-    if(nterup.gt.1) then
-      do iel = 1, ncel
-        trava(1,iel) = trava(1,iel) + trav(1,iel)
-        trava(2,iel) = trava(2,iel) + trav(2,iel)
-        trava(3,iel) = trava(3,iel) + trav(3,iel)
-        trav(1,iel)  = w7(iel)
-        trav(2,iel)  = w8(iel)
-        trav(3,iel)  = w9(iel)
-      enddo
-    else
-      do iel = 1, ncel
-        trav(1,iel)  = w7(iel) + trav(1,iel)
-        trav(2,iel)  = w8(iel) + trav(2,iel)
-        trav(3,iel)  = w9(iel) + trav(3,iel)
-      enddo
-    endif
-  endif
-
-endif
-
-! ---> Implicit part
-
-!  At the second call, fimp is not needed anymore
-if (iappel.eq.1) then
-  if (ncepdp.gt.0) then
-    ! The theta-scheme for the head loss is the same as the other terms
-    thetap = vcopt_u%thetav
-    do ielpdc = 1, ncepdp
-      iel = icepdc(ielpdc)
-      romvom = crom(iel)*cell_f_vol(iel)*thetap
-
-      ! Diagonal part
-      do isou = 1, 3
-        fimp(isou,isou,iel) = fimp(isou,isou,iel) + romvom*ckupdc(ielpdc,isou)
-      enddo
-      ! Extra-diagonal part
-      cpdc12 = ckupdc(ielpdc,4)
-      cpdc23 = ckupdc(ielpdc,5)
-      cpdc13 = ckupdc(ielpdc,6)
-
-      fimp(1,2,iel) = fimp(1,2,iel) + romvom*cpdc12
-      fimp(2,1,iel) = fimp(2,1,iel) + romvom*cpdc12
-      fimp(1,3,iel) = fimp(1,3,iel) + romvom*cpdc13
-      fimp(3,1,iel) = fimp(3,1,iel) + romvom*cpdc13
-      fimp(2,3,iel) = fimp(2,3,iel) + romvom*cpdc23
-      fimp(3,2,iel) = fimp(3,2,iel) + romvom*cpdc23
-    enddo
-  endif
-endif
-
-
-!-------------------------------------------------------------------------------
-! ---> Coriolis force
-!     (if iphydr=1 then this term is already taken into account)
-
-! --->  Explicit part
-
-if ((icorio.eq.1.or.iturbo.eq.1) .and. iphydr.ne.1) then
-
-  ! A la premiere iter sur navsto, on ajoute la partie issue des
-  ! termes explicites
-  if (iterns.eq.1) then
-
-    ! Si on n'itere pas sur navsto : TRAV
-    if (nterup.eq.1) then
-
-      call field_get_val_s(icrom, crom)
-
-      do iel = 1, ncel
-        romvom = -ccorio*crom(iel)*cell_f_vol(iel)
-        call add_coriolis_v(irotce(iel), romvom, vela(:,iel), trav(:,iel))
-      enddo
-
-    ! Si on itere sur navsto : TRAVA
-    else
-
-      do iel = 1, ncel
-        romvom = -ccorio*crom(iel)*cell_f_vol(iel)
-        call add_coriolis_v(irotce(iel), romvom, vela(:,iel), trava(:,iel))
-      enddo
-
-    endif
-  endif
-endif
-
-! --->  Implicit part
-
-!  At the second call, fimp is not needed anymore
-if(iappel.eq.1) then
-  if (icorio.eq.1 .or. iturbo.eq.1) then
-    ! The theta-scheme for the Coriolis term is the same as the other terms
-    thetap = vcopt_u%thetav
-
-    do iel = 1, ncel
-      romvom = -ccorio*crom(iel)*cell_f_vol(iel)*thetap
-      call add_coriolis_t(irotce(iel), romvom, fimp(:,:,iel))
-    enddo
-
-  endif
-endif
-
-!-------------------------------------------------------------------------------
-! ---> - Divergence of tensor Rij
-
-if(itytur.eq.3.and.iterns.eq.1) then
-
-  allocate(rij(6,ncelet))
-  if(irijco.eq.1) then !TODO change index of rij
-    do iel = 1, ncelet
-      rij(1,iel) = cvara_rij(1,iel)
-      rij(2,iel) = cvara_rij(2,iel)
-      rij(3,iel) = cvara_rij(3,iel)
-      rij(4,iel) = cvara_rij(4,iel)
-      rij(5,iel) = cvara_rij(5,iel)
-      rij(6,iel) = cvara_rij(6,iel)
-    enddo
-  else
-    do iel = 1, ncelet
-      rij(1,iel) = cvara_r11(iel)
-      rij(2,iel) = cvara_r22(iel)
-      rij(3,iel) = cvara_r33(iel)
-      rij(4,iel) = cvara_r12(iel)
-      rij(5,iel) = cvara_r23(iel)
-      rij(6,iel) = cvara_r13(iel)
-    enddo
-  endif
-! --- Boundary conditions on the components of the tensor Rij
-
-  allocate(coefat(6,nfabor))
-  if(irijco.eq.1) then
-    call field_get_coefad_v(ivarfl(irij),coefap)
-    coefat = coefap
-  else
-    call field_get_coefad_s(ivarfl(ir11),coef1)
-    call field_get_coefad_s(ivarfl(ir22),coef2)
-    call field_get_coefad_s(ivarfl(ir33),coef3)
-    call field_get_coefad_s(ivarfl(ir12),coef4)
-    call field_get_coefad_s(ivarfl(ir23),coef5)
-    call field_get_coefad_s(ivarfl(ir13),coef6)
-    do ifac = 1, nfabor
-      coefat(1,ifac) = coef1(ifac)
-      coefat(2,ifac) = coef2(ifac)
-      coefat(3,ifac) = coef3(ifac)
-      coefat(4,ifac) = coef4(ifac)
-      coefat(5,ifac) = coef5(ifac)
-      coefat(6,ifac) = coef6(ifac)
-    enddo
-  endif
-
-  allocate(coefbt(6,6,nfabor))
-  do ifac = 1, nfabor
-    do ii = 1, 6
-      do jj = 1, 6
-        coefbt(jj,ii,ifac) = 0.d0
-      enddo
-    enddo
-  enddo
-
-  if(irijco.eq.1) then
-    call field_get_coefbd_v(ivarfl(irij),coefbp)
-    coefbt = coefbp
-  else
-    call field_get_coefbd_s(ivarfl(ir11),coef1)
-    call field_get_coefbd_s(ivarfl(ir22),coef2)
-    call field_get_coefbd_s(ivarfl(ir33),coef3)
-    call field_get_coefbd_s(ivarfl(ir12),coef4)
-    call field_get_coefbd_s(ivarfl(ir23),coef5)
-    call field_get_coefbd_s(ivarfl(ir13),coef6)
-    do ifac = 1, nfabor
-      coefbt(1,1,ifac) = coef1(ifac)
-      coefbt(2,2,ifac) = coef2(ifac)
-      coefbt(3,3,ifac) = coef3(ifac)
-      coefbt(4,4,ifac) = coef4(ifac)
-      coefbt(5,5,ifac) = coef5(ifac)
-      coefbt(6,6,ifac) = coef6(ifac)
-    enddo
-  endif
-
-  ! Flux computation options
-  f_id = -1
-  init = 1;
-  inc  = 1;
-  iflmb0 = 0;
-  call field_get_key_struct_var_cal_opt(ivarfl(ir11), vcopt)
-  nswrgp = vcopt%nswrgr;
-  imligp = vcopt%imligr;
-  iwarnp = vcopt%iwarni;
-  epsrgp = vcopt%epsrgr;
-  climgp = vcopt%climgr;
-  itypfl = 1;
-
-  allocate(tflmas(3,nfac))
-  allocate(tflmab(3,nfabor))
-
-  call divrij &
- ( f_id   , itypfl ,                                              &
-   iflmb0 , init   , inc    , imrgra , nswrgp , imligp ,          &
-   iwarnp ,                                                       &
-   epsrgp , climgp ,                                              &
-   crom   , brom   ,                                              &
-   rij    ,                                                       &
-   coefat , coefbt ,                                              &
-   tflmas , tflmab )
-
-  deallocate(rij)
-  deallocate(coefat, coefbt)
-
-  !     Calcul des efforts aux bords (partie 5/5), si necessaire
-
-  if (iforbr.ge.0) then
-    do ifac = 1, nfabor
-      do isou = 1, 3
-        forbr(isou,ifac) = forbr(isou,ifac) + tflmab(isou,ifac)
-      enddo
-    enddo
-  endif
-
-  allocate(divt(3,ncelet))
-  init = 1
-  call divmat(init,tflmas,tflmab,divt)
-
-  deallocate(tflmas, tflmab)
-
-  ! (if iphydr=1 then this term is already taken into account)
-  if (iphydr.ne.1.or.igprij.ne.1) then
-
-    ! If extrapolation of source terms
-    if (isno2t.gt.0) then
-      do iel = 1, ncel
-        do isou = 1, 3
-          c_st_vel(isou,iel) = c_st_vel(isou,iel) - divt(isou,iel)
-        enddo
-      enddo
-
-    ! No extrapolation of source terms
-    else
-
-      ! No PISO iteration
-      if (nterup.eq.1) then
-        do iel = 1, ncel
-          do isou = 1, 3
-            trav(isou,iel) = trav(isou,iel) - divt(isou,iel)
-          enddo
-        enddo
-      ! PISO iterations
-      else
-        do iel = 1, ncel
-          do isou = 1, 3
-            trava(isou,iel) = trava(isou,iel) - divt(isou,iel)
-          enddo
-        enddo
-      endif
-    endif
-  endif
-
-endif
-
-
-!-------------------------------------------------------------------------------
 ! ---> Face diffusivity for the velocity
-
 if (vcopt_u%idiff.ge. 1) then
 
   call field_get_val_s(iviscl, viscl)
   call field_get_val_s(ivisct, visct)
 
-  if (itytur.eq.3) then
-    do iel = 1, ncel
-      w1(iel) = viscl(iel)
-    enddo
-  else
-    do iel = 1, ncel
-      w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
-    enddo
-  endif
+  do iel = 1, ncel
+    w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
+  enddo
+
 
   ! Scalar diffusivity (Default)
-  if (vcopt_u%idften.eq.1) then
 
-    call viscfa &
-   ( imvisf ,                                                       &
-     w1     ,                                                       &
-     viscf  , viscb  )
 
-    ! When using Rij-epsilon model with the option irijnu=1, the face
-    ! viscosity for the Matrix (viscfi and viscbi) is increased
-    if(itytur.eq.3.and.irijnu.eq.1) then
+  call viscfa &
+ ( imvisf ,                                                       &
+   w1     ,                                                       &
+   viscf  , viscb  )
 
-      do iel = 1, ncel
-        w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
-      enddo
 
-      call viscfa &
-   ( imvisf ,                                                       &
-     w1     ,                                                       &
-     viscfi , viscbi )
-    endif
-
-  ! Tensorial diffusion of the velocity (in case of tensorial porosity)
-  else if (vcopt_u%idften.eq.6) then
-
-    do iel = 1, ncel
-      do isou = 1, 3
-        viscce(isou, iel) = w1(iel)
-      enddo
-      do isou = 4, 6
-        viscce(isou, iel) = 0.d0
-      enddo
-    enddo
-
-    call vistnv &
-     ( imvisf ,                                                       &
-       viscce ,                                                       &
-       viscf  , viscb  )
-
-    ! When using Rij-epsilon model with the option irijnu=1, the face
-    ! viscosity for the Matrix (viscfi and viscbi) is increased
-    if(itytur.eq.3.and.irijnu.eq.1) then
-
-      do iel = 1, ncel
-        w1(iel) = viscl(iel) + vcopt_u%idifft*visct(iel)
-      enddo
-
-      do iel = 1, ncel
-        do isou = 1, 3
-          viscce(isou, iel) = w1(iel)
-        enddo
-        do isou = 4, 6
-          viscce(isou, iel) = 0.d0
-        enddo
-      enddo
-
-      call vistnv &
-       ( imvisf ,                                                       &
-         viscce ,                                                       &
-         viscfi , viscbi )
-
-    endif
-  endif
 
 ! --- If no diffusion, viscosity is set to 0.
 else
@@ -1232,69 +609,7 @@ endif
 !      into account (only for the first call, the second one is dedicated
 !      to error estimators)
 
-if (iappel.eq.1.and.iphydr.eq.1.and.iterns.eq.1) then
 
-! force ext au pas de temps precedent :
-!     FRCXT a ete initialise a zero
-!     (est deja utilise dans typecl, et est mis a jour a la fin
-!     de navsto)
-
-  do iel = 1, ncel
-
-    ! External force variation between time step n and n+1
-    ! (used in the correction step)
-    drom = (crom(iel)-ro0)
-    dfrcxt(1, iel) = drom*gx - frcxt(1, iel)
-    dfrcxt(2, iel) = drom*gy - frcxt(2, iel)
-    dfrcxt(3, iel) = drom*gz - frcxt(3, iel)
-  enddo
-
-  ! Add head losses
-  if (ncepdp.gt.0) then
-    do ielpdc = 1, ncepdp
-      iel=icepdc(ielpdc)
-      vit1   = vela(1,iel)
-      vit2   = vela(2,iel)
-      vit3   = vela(3,iel)
-      cpdc11 = ckupdc(ielpdc,1)
-      cpdc22 = ckupdc(ielpdc,2)
-      cpdc33 = ckupdc(ielpdc,3)
-      cpdc12 = ckupdc(ielpdc,4)
-      cpdc23 = ckupdc(ielpdc,5)
-      cpdc13 = ckupdc(ielpdc,6)
-      dfrcxt(1 ,iel) = dfrcxt(1 ,iel) &
-                    - crom(iel)*(cpdc11*vit1+cpdc12*vit2+cpdc13*vit3)
-      dfrcxt(2 ,iel) = dfrcxt(2 ,iel) &
-                    - crom(iel)*(cpdc12*vit1+cpdc22*vit2+cpdc23*vit3)
-      dfrcxt(3 ,iel) = dfrcxt(3 ,iel) &
-                    - crom(iel)*(cpdc13*vit1+cpdc23*vit2+cpdc33*vit3)
-    enddo
-  endif
-
-  ! Add Coriolis force
-  if (icorio.eq.1 .or. iturbo.eq.1) then
-    do iel = 1, ncel
-      rom = -ccorio*crom(iel)
-      call add_coriolis_v(irotce(iel), rom, vela(:,iel), dfrcxt(:,iel))
-    enddo
-  endif
-
-  ! Add -div( rho R) as external force
-  if (itytur.eq.3.and.igprij.eq.1) then
-    do iel = 1, ncel
-      dvol = 1.d0/cell_f_vol(iel)
-      do isou = 1, 3
-        dfrcxt(isou, iel) = dfrcxt(isou, iel) - divt(isou, iel)*dvol
-      enddo
-    enddo
-  endif
-
-
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(dfrcxt)
-  endif
-
-endif
 
 !===============================================================================
 ! 3. Solving of the 3x3xNcel coupled system
@@ -1345,14 +660,6 @@ if (iterns.eq.1) then
     call uitsnv (vel, tsexp, tsimp)
   endif
 
-  n_fans = cs_fan_n_fans()
-  if (n_fans .gt. 0) then
-    if (ntcabs.eq.ntpabs+1) then
-      call debvtl(flumas, flumab, crom, brom)
-    endif
-    call tsvvtl(tsexp)
-  endif
-
   call ustsnv &
  ( nvar   , nscal  , ncepdp , ncesmp ,                            &
    iu   ,                                                         &
@@ -1381,26 +688,6 @@ if (iterns.eq.1) then
     endif
   endif
 
-  ! Coupling between two Code_Saturne
-  if (nbrcpl.gt.0) then
-    !vectorial interleaved exchange
-    call csccel(iu, vela, coefav, coefbv, tsexp)
-  endif
-
-  if (iphydr.eq.1.and.igpust.eq.1) then
-
-    do iel = 1, ncel
-      !FIXME when using porosity
-      dvol = 1.d0/cell_f_vol(iel)
-      do isou = 1, 3
-        dfrcxt(isou, iel) = dfrcxt(isou, iel) + tsexp(isou, iel)*dvol
-      enddo
-    enddo
-
-    if (irangp.ge.0.or.iperio.eq.1) then
-      call synvin(dfrcxt)
-    endif
-  endif
 
 endif
 
@@ -1518,60 +805,6 @@ endif
 !-------------------------------------------------------------------------------
 ! --->  Mass source terms
 
-if (ncesmp.gt.0) then
-
-!     On calcule les termes Gamma (uinj - u)
-!       -Gamma u a la premiere iteration est mis dans
-!          TRAV ou TRAVA selon qu'on itere ou non sur navsto
-!       Gamma uinj a la premiere iteration est placee dans W1
-!       ROVSDT a chaque iteration recoit Gamma
-  allocate(gavinj(3,ncelet))
-  if (nterup.eq.1) then
-    call catsmv &
-  ( ncelet , ncel , ncesmp , iterns , isno2t,                   &
-    icetsm , itypsm(1,iu),                                      &
-    cell_f_vol    , vela , smacel(1,iu) , smacel(1,ipr) ,       &
-    trav   , fimp , gavinj )
-  else
-    call catsmv &
-  ( ncelet , ncel , ncesmp , iterns , isno2t,                   &
-    icetsm , itypsm(1,iu),                                      &
-    cell_f_vol    , vela , smacel(1,iu) , smacel(1,ipr) ,       &
-    trava  , fimp  , gavinj )
-  endif
-
-  ! At the first PISO iteration, the explicit part "Gamma u^{in}" is added
-  if (iterns.eq.1) then
-    ! If source terms are extrapolated, stored in fields
-    if(isno2t.gt.0) then
-      do iel = 1, ncel
-        do isou = 1, 3
-          c_st_vel(isou,iel) = c_st_vel(isou,iel) + gavinj(isou,iel)
-        enddo
-      enddo
-
-    else
-      ! If no PISO iteration: in trav
-      if (nterup.eq.1) then
-        do iel = 1,ncel
-          do isou = 1, 3
-            trav(isou,iel)  = trav(isou,iel) + gavinj(isou,iel)
-          enddo
-        enddo
-      ! Otherwise, in trava
-      else
-        do iel = 1,ncel
-          do isou = 1, 3
-            trava(isou,iel) = trava(isou,iel) + gavinj(isou,iel)
-          enddo
-        enddo
-      endif
-    endif
-  endif
-
-  deallocate(gavinj)
-
-endif
 
 ! ---> Right Hand Side initialization
 
@@ -1614,41 +847,6 @@ else
   endif
 endif
 
-! ---> LAGRANGIEN : COUPLAGE RETOUR
-
-!     L'ordre 2 sur les termes issus du lagrangien necessiterait de
-!       decomposer TSLAGR(IEL,ISOU) en partie implicite et
-!       explicite, comme c'est fait dans ustsnv.
-!     Pour le moment, on n'y touche pas.
-
-if (iilagr.eq.2 .and. ltsdyn.eq.1)  then
-
-  do iel = 1, ncel
-    do isou = 1, 3
-      smbr(isou,iel) = smbr(isou,iel) + tslagr(iel,itsvx+isou-1)
-    enddo
-  enddo
-  ! At the second call, fimp is unused
-  if(iappel.eq.1) then
-    do iel = 1, ncel
-      do isou = 1, 3
-        fimp(isou,isou,iel) = fimp(isou,isou,iel) + max(-tslagr(iel,itsli),zero)
-      enddo
-    enddo
-  endif
-
-endif
-
-! ---> Electric Arc (Laplace Force)
-!      (No 2nd order in time yet)
-if (ippmod(ielarc).ge.1) then
-  call field_get_val_v_by_name('laplace_force', lapla)
-  do iel = 1, ncel
-    smbr(1,iel) = smbr(1,iel) + cell_f_vol(iel) * lapla(1,iel)
-    smbr(2,iel) = smbr(2,iel) + cell_f_vol(iel) * lapla(2,iel)
-    smbr(3,iel) = smbr(3,iel) + cell_f_vol(iel) * lapla(3,iel)
-  enddo
-endif
 
 ! Solver parameters
 iconvp = vcopt_u%iconv
@@ -1671,6 +869,7 @@ climgp = vcopt_u%climgr
 extrap = vcopt_u%extrag
 relaxp = vcopt_u%relaxv
 thetap = vcopt_u%thetav
+thetap = 1.d0
 
 if (ippmod(icompf).ge.0) then
   ! impose boundary convective flux at some faces (face indicator icvfli)
@@ -1831,9 +1030,6 @@ if (iappel.eq.1.and.irnpnw.eq.1) then
 
   ! Compute div(rho u*)
 
-  if (irangp.ge.0.or.iperio.eq.1) then
-    call synvin(vel)
-  endif
 
   ! To save time, no space reconstruction
   itypfl = 1

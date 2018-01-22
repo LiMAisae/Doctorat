@@ -134,8 +134,8 @@ cs_user_parameters(void)
   cs_var_cal_opt_t var_cal_opt;
 
   ts->nt_max = 1000000;
-  tso->idtvar = 0;
-  stokes->idilat = 1;
+  tso->idtvar = 1;
+  stokes->idilat = 2;
 
   for (int f_id = 0 ; f_id < cs_field_n_fields() ; f_id++) {
     cs_field_t *f = cs_field_by_id(f_id);

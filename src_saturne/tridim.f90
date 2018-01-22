@@ -465,7 +465,7 @@ if (icalhy.eq.1.or.idilat.gt.1.or.ivofmt.ge.0.or.ipthrm.eq.1) then
   enddo
 endif
 
-
+print*,'itrale', itrale
 !===============================================================================
 ! 6.  MISE A JOUR DU MAILLAGE POUR UN COUPLAGE ROTOR/STATOR
 !===============================================================================
@@ -503,23 +503,7 @@ endif
 
 if (nbrcpl.gt.0) call cscloc
 
-!===============================================================================
-! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
-!      SOIT VARIABLES AU COURS DU TEMPS
-!      SOIT VARIABLES LORS D'UNE REPRISE DE CALCUL
-!        (VISCOSITES ET MASSE VOLUMIQUE)
-!===============================================================================
 
-if (vcopt_u%iwarni.ge.1) then
-  write(nfecra,1010)
-endif
-
-call phyvar(nvar, nscal, dt)
-
-if (itrale.gt.0) then
-  iappel = 2
-  call schtmp(nscal, iappel)
-endif
 
 
 ! REMPLISSAGE DES COEFS DE PDC
@@ -1331,7 +1315,53 @@ do while (iterns.le.nterup)
   endif
 
 !===============================================================================
+!===============================================================================
+! 15.  RESOLUTION DES SCALAIRES
+!===============================================================================
 
+	if (nscal.ge.1 .and. iirayo.gt.0) then
+
+		if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
+		  write(nfecra,1070)
+		endif
+
+		call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
+			                   dt, cp2fol, cp2ch, ichcor)
+	endif
+
+	if (nscal.ge.1) then
+
+		if(vcopt_u%iwarni.ge.1) then
+		  write(nfecra,1060)
+		endif
+
+		call scalai                                                     &
+	 ( nvar   , nscal  ,                                              &
+		 dt     )
+
+		! Diffusion terms for weakly compressible algorithm
+		if (idilat.ge.4) then
+		  call diffst(nscal)
+		endif
+
+	endif
+!===============================================================================
+! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
+!      SOIT VARIABLES AU COURS DU TEMPS
+!      SOIT VARIABLES LORS D'UNE REPRISE DE CALCUL
+!        (VISCOSITES ET MASSE VOLUMIQUE)
+!===============================================================================
+
+if (vcopt_u%iwarni.ge.1) then
+  write(nfecra,1010)
+endif
+
+call phyvar(nvar, nscal, dt)
+
+if (itrale.gt.0) then
+  iappel = 2
+  call schtmp(nscal, iappel)
+endif
 !===============================================================================
 ! 11. CALCUL A CHAMP DE VITESSE NON FIGE :
 !      ON RESOUT VITESSE ET TURBULENCE
@@ -1709,33 +1739,6 @@ endif  ! Fin si calcul sur champ de vitesse fige SUITE
 !===============================================================================
 ! 15.  RESOLUTION DES SCALAIRES
 !===============================================================================
-
-if (nscal.ge.1 .and. iirayo.gt.0) then
-
-  if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
-    write(nfecra,1070)
-  endif
-
-  call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
-                             dt, cp2fol, cp2ch, ichcor)
-endif
-
-if (nscal.ge.1) then
-
-  if(vcopt_u%iwarni.ge.1) then
-    write(nfecra,1060)
-  endif
-
-  call scalai                                                     &
- ( nvar   , nscal  ,                                              &
-   dt     )
-
-  ! Diffusion terms for weakly compressible algorithm
-  if (idilat.ge.4) then
-    call diffst(nscal)
-  endif
-
-endif
 
 ! Free memory
 deallocate(icodcl, rcodcl)
