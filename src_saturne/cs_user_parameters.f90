@@ -108,24 +108,12 @@ integer nmodpp
 
 ! Local variables
 
-integer       jj
-
-!===============================================================================
-
-!     This subroutine allows setting parameters
-
-!       which do not already appear in the other subroutines of this file.
-
-
-!     It is possible to add or remove parameters.
-
-
-!     The number of physical properties and variables is known here.
-
-!===============================================================================
+integer       ii, jj
+integer       f_id, iscal
+double precision phi
 
 if (.true.) then
-  viscl0 = 1.d0/Re
+  viscl0 = 1.d-3
 endif
 
 if (.true.) then
@@ -140,10 +128,10 @@ if (.true.) then
     ! For scalars which are not variances
     if (iscavr(jj).le.0) then
       ! We define the scalar diffusivity
-      visls0(jj) = viscl0/Pr
+      visls0(jj) = viscl0
     endif
   enddo
-
+  ischtp = 2
 endif
 
 return
@@ -151,3 +139,4 @@ end subroutine usipsu
 
 
 !===============================================================================
+

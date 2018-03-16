@@ -98,7 +98,7 @@ integer          nvar   , nscal
 
 double precision, pointer, dimension(:)   :: dt
 double precision, pointer, dimension(:,:) :: frcxt => null()
-
+double precision, dimension(:,:), pointer :: c_st_vel,c_st_vela
 ! Local variables
 
 logical          must_return
@@ -166,7 +166,7 @@ double precision, dimension(:), pointer :: cvar_scalt, cvar_totwt
 integer mbrom
 double precision, dimension(:), pointer :: cpro_delay, cpro_capacity, cpro_sat
 double precision, dimension(:), pointer :: cproa_delay, cproa_capacity
-double precision, dimension(:), pointer :: cproa_sat
+double precision, dimension(:), pointer :: cproa_sat, cproa_scal_st_, cproa_scal_st, cpro_scal_st
 double precision, dimension(:), pointer :: i_mass_flux, b_mass_flux
 
 double precision, dimension(:), pointer :: coefap, cofafp, cofbfp
@@ -236,7 +236,9 @@ call field_get_key_struct_var_cal_opt(ivarfl(ipr), vcopt_p)
 !===============================================================================
 
 allocate(isostd(nfabor+1))
-
+allocate(c_st_vela(3,ncel))
+allocate(cproa_scal_st_(ncel))
+allocate(cpro_scal_st(ncel))
 must_return = .false.
 
 if (vcopt_u%iwarni.ge.1) then
@@ -503,23 +505,7 @@ endif
 
 if (nbrcpl.gt.0) call cscloc
 
-!===============================================================================
-! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
-!      SOIT VARIABLES AU COURS DU TEMPS
-!      SOIT VARIABLES LORS D'UNE REPRISE DE CALCUL
-!        (VISCOSITES ET MASSE VOLUMIQUE)
-!===============================================================================
 
-if (vcopt_u%iwarni.ge.1) then
-  write(nfecra,1010)
-endif
-
-call phyvar(nvar, nscal, dt)
-
-if (itrale.gt.0) then
-  iappel = 2
-  call schtmp(nscal, iappel)
-endif
 
 
 ! REMPLISSAGE DES COEFS DE PDC
@@ -896,7 +882,16 @@ iterns = 1
 if (ippmod(idarcy).eq.1) then
   if ((darcy_unsteady.eq.0).and.(ntcabs.gt.1)) goto 100
 endif
+print*,"==================================itrale ", itrale, "================================"
 
+if (isno2t.gt.0) then 
+  call field_get_key_int(ivarfl(isca(1)), kstprv, f_id)
+
+  call field_get_val_s(f_id, cproa_scal_st)
+  do iel = 1, ncel
+      cproa_scal_st_(iel) = cproa_scal_st(iel)
+  enddo 
+endif
 do while (iterns.le.nterup)
 
   call precli(nvar, icodcl, rcodcl)
@@ -1332,6 +1327,60 @@ do while (iterns.le.nterup)
 
 !===============================================================================
 
+
+print*,"===============================interns= ================================",iterns
+!========================================================================
+! Part 1
+print*,"===============================part 1 ==================================="
+
+!========================================================================
+
+!===============================================================================
+! 15.  RESOLUTION DES SCALAIRES
+!===============================================================================
+	if (nscal.ge.1 .and. iirayo.gt.0) then
+
+		if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
+		  write(nfecra,1070)
+		endif
+
+		call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
+			                   dt, cp2fol, cp2ch, ichcor)
+	endif
+
+	if (nscal.ge.1) then
+
+		if(vcopt_u%iwarni.ge.1) then
+		  write(nfecra,1060)
+		endif
+
+		call scalai                                                     &
+	       ( nvar   , nscal  ,                                              &
+		 dt     , iterns,icvrge)
+
+		! Diffusion terms for weakly compressible algorithm
+		if (idilat.ge.4) then
+		  call diffst(nscal)
+		endif
+
+	endif
+!===============================================================================
+! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
+!      SOIT VARIABLES AU COURS DU TEMPS
+!      SOIT VARIABLES LORS D'UNE REPRISE DE CALCUL
+!        (VISCOSITES ET MASSE VOLUMIQUE)
+!===============================================================================
+
+if (vcopt_u%iwarni.ge.1) then
+  write(nfecra,1010)
+endif
+
+call phyvar(nvar, nscal, dt)
+
+if (itrale.gt.0) then
+  iappel = 2
+  call schtmp(nscal, iappel)
+endif
 !===============================================================================
 ! 11. CALCUL A CHAMP DE VITESSE NON FIGE :
 !      ON RESOUT VITESSE ET TURBULENCE
@@ -1360,59 +1409,28 @@ do while (iterns.le.nterup)
         frcxt  ,                                                       &
         trava  , ximpav , uvwk   )
 
-      ! Update local pointer arrays for transient turbomachinery computations
-      if (iturbo.eq.2) then
-        call field_get_val_s(ivarfl(ipr), cvar_pr)
-        call field_get_val_prev_s(ivarfl(ipr), cvara_pr)
-      endif
-
-    else
-
-      call richards (icvrge, dt)
-
-      if (iihmpr.eq.1) then
-        call uidapp                                                    &
-         ( darcy_anisotropic_permeability,                             &
-           darcy_anisotropic_dispersion,                               &
-           darcy_gravity,                                              &
-           darcy_gravity_x, darcy_gravity_y, darcy_gravity_z,          &
-           darcy_unsaturated)
-      endif
-
-      ! Darcy : update data specific to underground flow
-      mbrom = 0
-      call usphyv(nvar, nscal, mbrom, dt)
-
-      if (darcy_unsteady.eq.0) then
-
-        do iel = 1, ncel
-          cproa_capacity(iel) = cpro_capacity(iel)
-          cproa_sat(iel) = cpro_sat(iel)
-        enddo
-
-        do ii = 1, nscal
-          call field_get_key_struct_gwf_soilwater_partition(ivarfl(isca(ii)), &
-                                                            sorption_scal)
-          call field_get_val_s(sorption_scal%idel, cpro_delay)
-          call field_get_val_prev_s(sorption_scal%idel, cproa_delay)
-          do iel = 1, ncel
-            cproa_delay(iel) = cpro_delay(iel)
-          enddo
-        enddo
-
-      endif
-
     endif
 
     !     Mise a jour de la pression si on utilise un couplage vitesse/pression
     !       par point fixe
     !     En parallele, l'echange est fait au debut de navstv.
+
     if (nterup.gt.1) then
       do iel = 1, ncel
         cvara_pr(iel) = cvar_pr(iel)
       enddo
     endif
 
+    if (iterns .lt. nterup.and.isno2t.gt.0) then
+      do iel = 1, ncel
+       cpro_scal_st(iel) = cproa_scal_st(iel)
+       cproa_scal_st(iel) = cproa_scal_st_(iel)
+      enddo 
+    endif
+    if ((istmpf.eq.0.and.inslst.eq.0) .or. istmpf.ne.0) then
+        iappel = 3
+        call schtmp(nscal, iappel)
+     endif
     !     Si c'est la derniere iteration : INSLST = 1
     if ((icvrge.eq.1).or.(iterns.eq.nterup)) then
 
@@ -1432,23 +1450,27 @@ do while (iterns.le.nterup)
       endif
 
       !     On teste le flux de masse
-      if ((istmpf.eq.0.and.inslst.eq.0) .or. istmpf.ne.0) then
-        iappel = 3
-        call schtmp(nscal, iappel)
-      endif
+      
 
       if (inslst.eq.1) goto 100
 
     endif
 
   endif ! Fin si calcul sur champ de vitesse figee
+!========================================================================
 
+!==================================================================
   iterns = iterns + 1
 
 enddo
 
-100 continue
 
+100 continue
+if(isno2t.gt.0) then
+  do iel = 1, ncel
+    cproa_scal_st(iel) = cpro_scal_st(iel)
+  enddo
+endif
 ! DARCY : the hydraulic head, identified with the pressure,
 ! has been updated by the call to Richards.
 ! As diffusion of scalars depends on hydraulic head in the
@@ -1710,38 +1732,13 @@ endif  ! Fin si calcul sur champ de vitesse fige SUITE
 ! 15.  RESOLUTION DES SCALAIRES
 !===============================================================================
 
-if (nscal.ge.1 .and. iirayo.gt.0) then
-
-  if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
-    write(nfecra,1070)
-  endif
-
-  call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
-                             dt, cp2fol, cp2ch, ichcor)
-endif
-
-if (nscal.ge.1) then
-
-  if(vcopt_u%iwarni.ge.1) then
-    write(nfecra,1060)
-  endif
-
-  call scalai                                                     &
- ( nvar   , nscal  ,                                              &
-   dt     )
-
-  ! Diffusion terms for weakly compressible algorithm
-  if (idilat.ge.4) then
-    call diffst(nscal)
-  endif
-
-endif
-
 ! Free memory
 deallocate(icodcl, rcodcl)
 
 deallocate(isostd)
-
+deallocate(c_st_vela)
+deallocate(cproa_scal_st_)
+deallocate(cpro_scal_st)
 !===============================================================================
 ! 16.  TRAITEMENT DU FLUX DE MASSE, DE LA VISCOSITE,
 !      DE LA MASSE VOLUMIQUE ET DE LA CHALEUR SPECIFIQUE POUR

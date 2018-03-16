@@ -90,14 +90,14 @@
 
 cs_real_t phi(int f_id,
               cs_real_t xx,
-              cs_real_t yy)
+              cs_real_t yy,
+              cs_real_t tcur)
 {
   cs_var_cal_opt_t var_cal_opt_u, var_cal_opt_sca;
-  const cs_fluid_properties_t *fp = cs_glob_fluid_properties;
-  const cs_physical_constants_t *pc = cs_glob_physical_constants;
   int keysca = cs_field_key_id("scalar_id");
   int key_cal_opt_id = cs_field_key_id("var_cal_opt");
-  int kvisls0 = cs_field_key_id("scalar_diffusivity_ref");
+  cs_real_t omega = 2., pi = acos(-1), coef = 1.e-3, ro1 = 5., ro2 = 1.;
+  cs_real_t mu = 1.e-3, kk= 2., uf = 0.5, vf = 0.5;
   cs_field_t *sca1 = NULL;
 
   for (int fid = 0; fid < cs_field_n_fields(); fid++) {
@@ -109,85 +109,170 @@ cs_real_t phi(int f_id,
   }
 
   cs_field_get_key_struct(CS_F_(u), key_cal_opt_id, &var_cal_opt_u);
-  cs_field_get_key_struct(sca1, key_cal_opt_id, &var_cal_opt_sca);
 
-  cs_real_t visls0 = cs_field_get_key_double(sca1, kvisls0);
+  if (sca1 != NULL)
+    cs_field_get_key_struct(sca1, key_cal_opt_id, &var_cal_opt_sca);
 
-  cs_real_t omega = 0.1, pi = acos(-1);
-  cs_real_t mu, mv, uu, vv, pp, sca, ro1, ro2, rho, vmass, beta, phi_;
-  cs_real_t dudx, dudy, dvdx, dvdy, dpdx, dpdy, dmudx, dmudy, dmvdx, dmvdy;
-  cs_real_t d2udx2, d2udy2, d2udxdy, d2vdx2, d2vdy2, d2vdxdy;
-  cs_real_t d2mudx2, d2mudy2, d2mudxdy, d2mvdx2, d2mvdy2, d2mvdxdy;
-  cs_real_t dscadx, dscady, d2scadx2, d2scady2, d2scadxdy;
-  int iconvu = var_cal_opt_u.iconv, iconvs = var_cal_opt_sca.iconv;
-  int idiffu = var_cal_opt_u.idiff, idiffs = var_cal_opt_sca.idiff;
+  cs_real_t xh, yh, u, v, p, sca, rho, q_z, q_u, q_v, s1, s2, s3, s4, s5;
+  cs_real_t phi_, s6, s7, s8, s9, s10, s11, s12, s13, s14, dzdx, dzdy;
+  cs_real_t d2rhodxdy, d2zdxdy, d2ud2x, d2vd2x, d2vd2y, d2ud2y,d2rhodzdx,d2rhodzdy;
+  cs_real_t d2udxdy,d2vdxdy, d2rhod2x, d2rhod2y;
+  cs_real_t dudx,dudy,dudt,dvdx,dvdy,dvdt,dpdx,dpdy, tvx, tvy;
+  cs_real_t dro, sro, d2zd2x,d2zd2y,dzdt,drhodz,drhodx,drhody,drhodt;
+  int iconvu, iconvs, idiffu, idiffs;
+
+  iconvu = var_cal_opt_u.iconv;
+  idiffu = var_cal_opt_u.idiff;
+
+  if (sca1 != NULL) {
+    /* For the coupled cases */
+    iconvs = var_cal_opt_sca.iconv;
+    idiffs = var_cal_opt_sca.idiff;
+  } else {
+    /* For the uncoupled cases (Stokes or Euler) */
+    iconvs = var_cal_opt_u.iconv;
+    idiffs = var_cal_opt_u.idiff;
+  }
+
+  /*-----------------------------*
+   *     Case u_f = v_f = 0. *
+   *-----------------------------*/
+
+  dro = ro2-ro1;
+  sro = ro1+ro2;
+
+  xh = xx - uf*tcur;
+  yh = yy - vf*tcur;
+
+  s1 = cos(pi*kk*xh);
+  s2 = sin(pi*kk*xh);
+  s3 = cos(pi*kk*yh);
+  s4 = sin(pi*kk*yh);
+  s5 = cos(pi*omega*tcur);
+  s6 = sin(pi*omega*tcur);
+  s7 = ro1 / ro2;
+  s8 = s2*s4*s5;
+  s9 = s1*s4*s6;
+  s10 = s2*s3*s6;
+  s11 = 1+s7+(1-s7)*s8;
+  s12 = 1-s7;
+  s13 = s1*s4*s5/s11;
+  s14 = s2*s3*s5/s11;
 
   /* Variables */
   phi_ = 0.;
 
-  pp = sin(pi*(xx+0.5))*sin(pi*(yy+0.5));
+  /* Scalar */
+  sca = (1+s8)/s11;
 
-  mu = (1.-cos(2.*pi*xx))*sin(2.*pi*yy);
-  mv = sin(2.*pi*xx)*(cos(2.*pi*yy)-1.);
+  /* Density */
+  rho = 1./(sca/ro2 + (1-sca)/ro1);
 
-  sca = 0.5*(sin(2.*pi*xx)*sin(2.*pi*yy)+1.);
+  /* Velocity */
+  u = uf - omega*s9/(4.*kk)*dro/rho;
 
-  ro1 = 1.;
-  ro2 = omega*ro1;
+  v = vf - omega*s10/(4.*kk)*dro/rho;
 
-  vmass  = sca/ro1 + (1.-sca)/ro2;
-  rho = 1./vmass;
-  beta= 1./ro1 - 1./ro2;
-
-  uu = mu/rho;
-  vv = mv/rho;
+  /* Pressure */
+  p = rho*u*v/2.;
 
   /* Derivatives */
 
-  dmudx    =  2.*pi*sin(2.*pi*xx)*sin(2.*pi*yy);
-  dmudy    =  2.*pi*(1.-cos(2.*pi*xx))*cos(2.*pi*yy);
-  d2mudx2  =  4.*pow(pi,2)*cos(2.*pi*xx)*sin(2.*pi*yy);
-  d2mudy2  = -4.*pow(pi,2)*(1.-cos(2.*pi*xx))*sin(2.*pi*yy);
-  d2mudxdy =  4.*pow(pi,2)*sin(2.*pi*xx)*cos(2.*pi*yy);
+  /* Z derivatives */
+  dzdx = pi*kk*s13*(1-s12*sca);
+  dzdy = pi*kk*s14*(1-s12*sca);
+  d2zd2x = pi*kk*(-s13*dzdx*s12+(1-s12*sca)*(pi*kk*(-s8/s11 - pow(s13,2)*s12)));
+  d2zd2y = pi*kk*(-s14*dzdy*s12+(1-s12*sca)*(pi*kk*(-s8/s11 - pow(s14,2)*s12)));
+  dzdt = pi*omega*s2*s4*s6/s11*(s12*sca-1);
+  d2zdxdy = pi*kk*(-s12*s13*dzdy+(1-s12*sca)*(pi*kk*s1*s3*s5*s11-pi*kk*s1*
+            s4*s5*(1-s7)*s2*s3*s5)/pow(s11,2));
 
-  dmvdx    =  2.*pi*cos(2.*pi*xx)*(cos(2.*pi*yy)-1.);
-  dmvdy    = -2.*pi*sin(2.*pi*xx)*sin(2.*pi*yy);
-  d2mvdx2  = -4.*pow(pi,2)*sin(2.*pi*xx)*(cos(2.*pi*yy)-1.);
-  d2mvdy2  = -4.*pow(pi,2)*sin(2.*pi*xx)*cos(2.*pi*yy);
-  d2mvdxdy = -4.*pow(pi,2)*cos(2.*pi*xx)*sin(2.*pi*yy);
 
-  dscadx    =  pi*cos(2.*pi*xx)*sin(2.*pi*yy);
-  dscady    =  pi*sin(2.*pi*xx)*cos(2.*pi*yy);
-  d2scadx2  = -2.*pow(pi,2)*sin(2.*pi*xx)*sin(2.*pi*yy);
-  d2scady2  = -2.*pow(pi,2)*sin(2.*pi*xx)*sin(2.*pi*yy);
-  d2scadxdy =  2.*pow(pi,2)*cos(2.*pi*xx)*cos(2.*pi*yy);
+  /* Rho derivatives */
+  drhodz = -(1/ro2 - 1/ro1)*pow(rho,2);
+  drhodx = drhodz * dzdx;
+  drhody = drhodz * dzdy;
+  drhodt = drhodz * dzdt;
+  d2rhodzdx = -2*(1/ro2 - 1/ro1)*drhodx*rho;
+  d2rhodzdy = -2*(1/ro2 - 1/ro1)*drhody*rho;
+  d2rhod2x = drhodz * d2zd2x + dzdx*d2rhodzdx;
+  d2rhod2y = drhodz * d2zd2y + dzdx*d2rhodzdy;
+  d2rhodxdy = drhodz * d2zdxdy + dzdy * d2rhodzdx;
 
-  dpdx = pi*cos(pi*(xx+0.5))*sin(pi*(yy+0.5));
-  dpdy = pi*sin(pi*(xx+0.5))*cos(pi*(yy+0.5));
+  /* U derivatives */
+  dudx = -dro*omega/4/kk*(-pi*kk*s2*s4*s6*rho-s9*drhodx)/pow(rho,2);
+  dudy = -dro*omega/4/kk*(pi*kk*s1*s3*s6*rho-s9*drhody)/pow(rho,2);
+  dudt = -dro*omega/4/kk*(pi*omega*s1*s4*s5*rho-s1*s4*s6*drhodt)/pow(rho,2);
 
-  dudx = vmass*dmudx + mu*beta*dscadx;
-  dudy = vmass*dmudy + mu*beta*dscady;
-  dvdx = vmass*dmvdx + mv*beta*dscadx;
-  dvdy = vmass*dmvdy + mv*beta*dscady;
+  d2ud2x = -dro*omega/4/kk/pow(rho,4)*(pow(rho,2)*s9*(-pow(pi*kk,2)*rho - d2rhod2x)
+         - (-pi*kk*s2*s4*s6*rho-s9*drhodx)*2*rho*drhodx);
+  d2ud2y = -dro*omega/4/kk/pow(rho,4)*(pow(rho,2)*s9*(-pow(pi*kk,2)*rho - d2rhod2y)
+         - (pi*kk*s1*s3*s6*rho-s9*drhody)*2*rho*drhody);
 
-  d2udx2 = vmass*d2mudx2  + beta*(2.*dmudx*dscadx + mu*d2scadx2);
-  d2udy2 = vmass*d2mudy2  + beta*(2.*dmudy*dscady + mu*d2scady2);
-  d2udxdy= vmass*d2mudxdy + beta*(dmudx*dscady + dmudy*dscadx + mu*d2scadxdy);
-  d2vdx2 = vmass*d2mvdx2  + beta*(2.*dmvdx*dscadx + mv*d2scadx2);
-  d2vdy2 = vmass*d2mvdy2  + beta*(2.*dmvdy*dscady + mv*d2scady2);
-  d2vdxdy= vmass*d2mvdxdy + beta*(dmvdx*dscady + dmvdy*dscadx + mv*d2scadxdy);
+  d2udxdy = -dro*omega/4/kk/pow(rho,4)*s6*((-pow(pi*kk,2)*s2*s3*rho+(pi*kk)*s1*
+           s3*drhodx+pi*kk*s2*s4*drhody-s1*s4*d2rhodxdy)*pow(rho,2) - (pi*kk*
+           s1*s3*rho - s1*s4*drhody)*2*rho*drhodx);
+
+  /* V derivatives */
+  dvdx = -dro*omega/4/kk*(pi*kk*s1*s3*s6*rho-s10*drhodx)/pow(rho,2);
+  dvdy = -dro*omega/4/kk*(-pi*kk*s2*s4*s6*rho-s10*drhody)/pow(rho,2);
+  dvdt = -dro*omega/4/kk*(pi*omega*s2*s3*s5*rho-s2*s3*s6*drhodt)/pow(rho,2);
+
+  d2vd2x = -dro*omega/4/kk/pow(rho,4)*(pow(rho,2)*s10*(-pow(pi*kk,2)*rho - d2rhod2x)
+         - (pi*kk*s1*s3*s6*rho-s10*drhodx)*2*rho*drhodx);
+  d2vd2y = -dro*omega/4/kk/pow(rho,4)*(pow(rho,2)*s10*(pow(pi*kk,2)*rho - d2rhod2y)
+         - (-pi*kk*s2*s4*s6*rho-s10*drhody)*2*rho*drhody);
+
+  d2vdxdy = -dro*omega/4/kk/pow(rho,4)*s6*((-pow(pi*kk,2)*s1*s4*rho+(pi*kk)*s1*
+            s3*drhody+pi*kk*s2*s4*drhodx-s2*s3*d2rhodxdy)*pow(rho,2) - (pi*kk*
+            s1*s3*rho - s2*s3*drhodx)*2*rho*drhody);
+
+  /* Pressure gradient */
+  dpdx = 0.5*(rho*u*dvdx+rho*v*dudx+u*v*drhodx);
+  dpdy = 0.5*(rho*u*dvdy+rho*v*dudy+u*v*drhody);
+
+  /* Viscous terms */
+  tvx = mu*((d2ud2x + d2ud2y) + 1./3. *(d2ud2x + d2vdxdy));
+
+  tvy = mu*((d2vd2x + d2vd2y) + 1./3. *(d2vd2x + d2udxdy));
+
+  /*-----------------------------------------------------------------------------*
+   * Scalar source term                                                          *
+   * q_z = d(rhoZ)/dt + d(rho u Z)/dx + d(rho v Z)/dy - D(d2(Z)/dx2 + d2(Z)/dy2) *
+   * q_z = rho(dZ/dt + (u-uf)dZ/dx + (v-vf)dZ/dy) - D(d2(Z)/dx2 + d2(Z)/dy2)     *
+   *-----------------------------------------------------------------------------*/
+
+  q_z = rho*(dzdt + (iconvs*u-uf)*dzdx + (iconvs*v-vf)*dzdy) - idiffs*coef*(d2zd2x + d2zd2y);
+
+  /*-----------------------------------------------------------------------------------*
+   * X Velocity source term                                                            *
+   * q_u = d(rho u)/dt + d(rho u u)/dx + d(rho u v)/dy + dp/dx - (d(t11)/dx+d(t12)/dy) *
+   * q_u = rho(du/dt + (u-uf)du/dx + (v-vf)du/dy) + dp/dx - tvx                        *
+   *-----------------------------------------------------------------------------------*/
+
+  q_u = rho*(dudt + (iconvu*u-uf)*dudx + (iconvu*v-vf)*dudy) + dpdx - idiffu*tvx;
+
+  /*-----------------------------------------------------------------------------------*
+   * Y Velocity source term                                                            *
+   * q_v = d(rho v)/dt + d(rho u v)/dx + d(rho v v)/dy + dp/dy - (d(t12)/dx+d(t22)/dy) *
+   * q_v = rho(dv/dt + (u-uf)dv/dx + (v-vf)dv/dy) + dp/dy - tvy                        *
+   *-----------------------------------------------------------------------------------*/
+
+  q_v = rho*(dvdt + (iconvu*u-uf)*dvdx + (iconvu*v-vf)*dvdy) + dpdy - idiffu*tvy;
+
+  /*-----------------------------------------------------------------------------------*/
 
   if (f_id == CS_F_(p)->id) {
 
-    phi_ = pp;
+    phi_ = p;
 
   } else if (f_id == CS_F_(u)->id) {
 
-    phi_ = uu;
+    phi_ = u;
 
   } else if (f_id == CS_F_(u)->id + 100) {
 
-    phi_ = vv;
+    phi_ = v;
 
   } else if (f_id == CS_F_(u)->id + 1000) {
 
@@ -201,18 +286,13 @@ cs_real_t phi(int f_id,
 
     phi_ = rho;
 
-  /* source terms (mu=rho*u, mv=rho*v, vm=1/rho) */
   } else if (f_id == -(CS_F_(u)->id+10)) {
 
-    phi_ = iconvu * (mu*dudx + mv*dudy)
-         - idiffu * fp->viscl0 * (d2udx2 + d2udy2 + 1./3.*(d2udx2 + d2vdxdy))
-         + dpdx - (rho-fp->ro0)*pc->gravity[0];
+    phi_ = q_u;
 
   } else if (f_id == -(CS_F_(u)->id + 100)) {
 
-    phi_ = iconvu * (mu*dvdx + mv*dvdy)
-         - idiffu * fp->viscl0 * (d2vdx2 + d2vdy2 + 1./3.*(d2vdy2 + d2udxdy))
-         + dpdy - (rho-fp->ro0)*pc->gravity[1];
+    phi_ = q_v;
 
   } else if (f_id == -(CS_F_(u)->id + 1000)) {
 
@@ -220,8 +300,11 @@ cs_real_t phi(int f_id,
 
   } else if (sca1 != NULL && f_id == -sca1->id) {
 
-    phi_ = iconvs * (mu*dscadx + mv*dscady)- idiffs
-         * visls0 * (d2scadx2 + d2scady2);
+    phi_ = q_z;
+
+  } else if (f_id == -50) {
+
+    phi_ = q_z + idiffu*coef*(d2zd2x + d2zd2y);
 
   } else {
     bft_printf("Unexpected variable : %d in function call\n", f_id);

@@ -46,8 +46,9 @@ module user_module
 
   !=============================================================================
 
-  double precision Re, Pr, Ra, omega
-  parameter       (Re = 1.d0, Pr = 0.71d0, Ra = 5.d3, omega = 0.1d0)
+  double precision omega, kk, ro1, ro2, mu, coef, uf, vf
+  parameter       (omega = 2.d0, kk = 2.d0, ro1 = 5.d0, ro2 = 1.d0, mu = 1.d-3 )
+  parameter       (coef = 1.d-3, uf = 0.5d0, vf = 0.5d0)
 
   ! Example: allocatable user arrays
 

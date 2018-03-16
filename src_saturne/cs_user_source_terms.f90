@@ -75,6 +75,7 @@ use parall
 use period
 use mesh
 use field
+use user_module
 use cs_c_bindings
 
 !===============================================================================
@@ -112,12 +113,12 @@ type(var_cal_opt) :: vcopt
 
 interface
 
-  function phi(f_id, x, y) result(phi_) &
+  function phi(f_id, x, y, t) result(phi_) &
     bind(C, name='phi')
     use, intrinsic :: iso_c_binding
     implicit none
     integer(kind=c_int), value :: f_id
-    real(kind=c_double), value :: x, y
+    real(kind=c_double), value :: x, y, t
     real(kind=c_double) :: phi_
   end function phi
 
@@ -136,14 +137,14 @@ if (vcopt%iwarni.ge.1) then
   call field_get_label(ivarfl(ivar), chaine)
   write(nfecra,1000) chaine(1:8)
 endif
-
 do iel = 1, ncel
 
   xx    = xyzcen(1,iel)
   yy    = xyzcen(2,iel)
 
-  crvexp(1,iel) = phi(-(ivarfl(iu)+10),xx,yy)*volume(iel)
-  crvexp(2,iel) = phi(-(ivarfl(iu)+100),xx,yy)*volume(iel)
+  crvexp(1,iel) = phi(-(ivarfl(iu)+10),xx,yy,ttcabs-dt(iel))*volume(iel)
+  crvexp(2,iel) = phi(-(ivarfl(iu)+100),xx,yy,ttcabs-dt(iel))*volume(iel)
+  
 enddo
 
 !--------
@@ -219,6 +220,7 @@ use parall
 use period
 use mesh
 use field
+use user_module
 use cs_c_bindings
 
 !===============================================================================
@@ -242,6 +244,7 @@ double precision crvexp(ncelet), crvimp(ncelet)
 
 character*80     chaine
 integer          ivar, iiscvr,  iel
+integer          ilelt, nlelt
 
 double precision xx, yy
 
@@ -258,12 +261,12 @@ type(var_cal_opt) :: vcopt
 
 interface
 
-  function phi(f_id, x, y) result(phi_) &
+  function phi(f_id, x, y, t) result(phi_) &
     bind(C, name='phi')
     use, intrinsic :: iso_c_binding
     implicit none
     integer(kind=c_int), value :: f_id
-    real(kind=c_double), value :: x, y
+    real(kind=c_double), value :: x, y, t
     real(kind=c_double) :: phi_
   end function phi
 
@@ -306,7 +309,8 @@ if (iscal.eq.1) then
      yy = xyzcen(2,iel)
 
      crvimp(iel) = 0.d0
-     crvexp(iel) =  phi(-ivarfl(ivar),xx,yy) * volume(iel)
+     crvexp(iel) =  phi(-ivarfl(ivar),xx,yy,ttcabs-dt(iel)) * volume(iel)
+
   enddo
 
   if (idilat.ge.4) then
@@ -314,7 +318,8 @@ if (iscal.eq.1) then
     do iel = 1, ncel
       xx = xyzcen(1,iel)
       yy = xyzcen(2,iel)
-      cpro_ts_scalt(iel) = cpro_ts_scalt(iel) + phi(-ivarfl(ivar),xx,yy) * volume(iel)
+      cpro_ts_scalt(iel) = cpro_ts_scalt(iel) + phi(-ivarfl(ivar),xx,yy,ttcabs-dt(iel)) * &
+                           volume(iel)
     enddo
   endif
 

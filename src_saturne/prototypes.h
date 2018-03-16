@@ -33,7 +33,8 @@
 
 cs_real_t phi(int f_id,
               cs_real_t xx,
-              cs_real_t yy);
+              cs_real_t yy,
+              cs_real_t tcur);
 
 /*----------------------------------------------------------------------------*/
 

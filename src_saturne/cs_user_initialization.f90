@@ -26,10 +26,6 @@
 ! Purpose:
 ! -------
 
-!> \file cs_user_initialization.f90
-!>
-!> \brief Initialize variables
-!>
 !
 !-------------------------------------------------------------------------------
 
@@ -98,11 +94,11 @@ double precision xx, yy
 
 integer, allocatable, dimension(:) :: lstelt
 
-double precision, dimension(:,:), pointer :: cvar_vel
-double precision, dimension(:), pointer :: cvar_pr, cvar_scal
+double precision, dimension(:,:), pointer :: cvar_vel, cvar_vela
+double precision, dimension(:), pointer :: cvar_pr, cvar_scal, cvara_scal, cvara_pr
 
-double precision, dimension(:), pointer :: imasfl, bmasfl
-double precision, dimension(:), pointer :: brom, crom
+double precision, dimension(:), pointer :: imasfl, bmasfl, imasfl_prev, bmasfl_prev
+double precision, dimension(:), pointer :: brom, crom, croma
 double precision, dimension(:,:), pointer :: coefau, cofafu
 double precision, dimension(:,:,:), pointer :: coefbu, cofbfu
 double precision  epsrgp, climgp, extrap
@@ -115,12 +111,12 @@ type(var_cal_opt) :: vcopt
 
 interface
 
-  function phi(f_id, x, y) result(phi_) &
+  function phi(f_id, x, y, t) result(phi_) &
     bind(C, name='phi')
     use, intrinsic :: iso_c_binding
     implicit none
     integer(kind=c_int), value :: f_id
-    real(kind=c_double), value :: x, y
+    real(kind=c_double), value :: x, y, t
     real(kind=c_double) :: phi_
   end function phi
 
@@ -134,26 +130,39 @@ allocate(lstelt(ncel)) ! temporary array for cells selection
 
 call field_get_val_s(ivarfl(ipr), cvar_pr)
 call field_get_val_v(ivarfl(iu), cvar_vel)
-call field_get_val_s(ivarfl(isca(1)), cvar_scal)
+call field_get_val_s(icrom, crom)
+call field_get_val_prev_s(icrom, croma)
+call field_get_val_prev_s(ivarfl(ipr), cvara_pr)
+call field_get_val_prev_v(ivarfl(iu), cvar_vela)
+call field_get_val_prev_s(ivarfl(isca(1)), cvara_scal)
+
+if (nscal.eq.1) then
+  call field_get_val_s(ivarfl(isca(1)), cvar_scal)
+  call field_get_val_prev_s(ivarfl(isca(1)), cvara_scal)
+endif
 
 do iel = 1, ncel
 
   xx = xyzcen(1,iel)
   yy = xyzcen(2,iel)
 
-  cvar_pr(iel) = phi(ivarfl(ipr),xx,yy)
-  cvar_vel(1,iel) = phi(ivarfl(iu) ,xx,yy)
-  cvar_vel(2,iel) = phi(ivarfl(iu)+100 ,xx,yy)
-  cvar_vel(3,iel) = phi(ivarfl(iu)+1000 ,xx,yy)
+  cvar_pr(iel) = phi(ivarfl(ipr),xx,yy,0.d0)
+  cvar_vel(1,iel) = phi(ivarfl(iu) ,xx,yy,0.d0)
+  cvar_vel(2,iel) = phi(ivarfl(iu)+100 ,xx,yy,0.d0)
+  cvar_vel(3,iel) = phi(ivarfl(iu)+1000 ,xx,yy,0.d0)
+! The varables precedent
 
-  if (nscal.eq.1)  cvar_scal(iel) = phi(ivarfl(isca(1)),xx,yy)
+
+  if (nscal.eq.1) then
+    cvar_scal(iel) = phi(ivarfl(isca(1)),xx,yy,0.d0)
+    !cvara_scal(iel) = phi(ivarfl(isca(1)),xx,yy,-ttcabs)
+  endif
 
 enddo
-
 !===============================================================================
 ! BS. mass fluxes imposed
 !===============================================================================
-
+if (idilat .eq. 4) then
   call field_get_key_int(ivarfl(iu), kimasf, iflmas)
   call field_get_key_int(ivarfl(iu), kbmasf, iflmab)
 
@@ -194,6 +203,7 @@ enddo
    coefau , coefbu ,                                              &
    imasfl , bmasfl )
 
+endif
 deallocate(lstelt) ! temporary array for cells selection
 
 return

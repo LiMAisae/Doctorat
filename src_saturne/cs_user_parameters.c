@@ -130,21 +130,22 @@ cs_user_parameters(void)
   cs_time_step_options_t *tso = cs_get_glob_time_step_options();
   cs_fluid_properties_t *fp = cs_get_glob_fluid_properties();
   cs_stokes_model_t *stokes = cs_get_glob_stokes_model();
+  cs_piso_t *piso = cs_get_glob_piso();
   int key_cal_opt_id = cs_field_key_id("var_cal_opt");
   cs_var_cal_opt_t var_cal_opt;
 
-  ts->nt_max = 1000000;
+  ts->nt_max = 1000;
   tso->idtvar = 0;
-  stokes->idilat = 1;
+  stokes->idilat = 2;
 
   for (int f_id = 0 ; f_id < cs_field_n_fields() ; f_id++) {
     cs_field_t *f = cs_field_by_id(f_id);
     if (f->type & CS_FIELD_VARIABLE) {
       cs_field_get_key_struct(f, key_cal_opt_id, &var_cal_opt);
-      var_cal_opt.blencv = 0.;
+      var_cal_opt.blencv = 1.;
       var_cal_opt.isstpc = 1;
       var_cal_opt.ischcv = 1;
-      var_cal_opt.epsilo = 1.e-12;
+      var_cal_opt.epsilo = 1.e-10;
       cs_field_set_key_struct(f, key_cal_opt_id, &var_cal_opt);
     }
   }
@@ -153,14 +154,17 @@ cs_user_parameters(void)
   fp->ivivar = 0;
   fp->icp = 0;
 
-  fp->xyzp0[0] = 0.5;
-  fp->xyzp0[1] = 0.5;
+  fp->xyzp0[0] = 0.;
+  fp->xyzp0[1] = 0.;
   fp->xyzp0[2] = 0.;
 
   fp->ro0 = 1.;
   fp->cp0 = 1.e3;
   fp->t0 = 300.;
   fp->p0 = 0.;
+
+  piso->nterup = 100;
+  piso->epsup = 1.e-5;
 }
 
 /*----------------------------------------------------------------------------*/

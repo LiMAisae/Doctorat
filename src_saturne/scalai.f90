@@ -38,7 +38,7 @@
 
 subroutine scalai &
  ( nvar   , nscal  ,                                              &
-   dt     )
+   dt     , iter_sca, icvrge)
 
 !===============================================================================
 ! Module files
@@ -75,7 +75,7 @@ double precision dt(ncelet)
 ! Local variables
 
 integer          iscal, ivar, iel, isou
-integer          ii, iisc, itspdv, icalc, iappel
+integer          ii, iisc, itspdv, icalc, iappel, iter_sca, icvrge
 integer          ispecf, scal_id, f_id, f_dim
 
 double precision, allocatable, dimension(:) :: dtr
@@ -112,7 +112,6 @@ if (ichemistry.ge.1 .and. nscal.gt.0) then
   call kinrates()
   !==========
 endif
-
 !===============================================================================
 ! 2. Handle model or specific physics scalars.
 !===============================================================================
@@ -291,7 +290,6 @@ if (nscapp.gt.0) then
       if (f_dim.eq.1) then
 
 ! ---> Appel a covofi pour la resolution
-
         call covofi                                                 &
         !==========
    ( nvar   , nscal  ,                                              &
@@ -301,7 +299,7 @@ if (nscapp.gt.0) then
      itypsm , itypcd , itypst ,                                     &
      dtr    , tslagr ,                                              &
      ckupdc , smacel , spcond , svcond , flxmst ,                   &
-     viscf  , viscb  )
+     viscf  , viscb, iter_sca, icvrge  )
 
       else
 
@@ -478,7 +476,7 @@ if (nscaus.gt.0) then
      itypsm , itypcd , itypst ,                                     &
      dtr    , tslagr ,                                              &
      ckupdc , smacel , spcond , svcond , flxmst ,                   &
-     viscf  , viscb  )
+     viscf  , viscb, iter_sca, icvrge  )
 
     else
 

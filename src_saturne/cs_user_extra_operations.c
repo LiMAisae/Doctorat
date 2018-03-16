@@ -58,9 +58,11 @@
 #include "fvm_writer.h"
 
 #include "cs_base.h"
+#include "cs_blas.h"
 #include "cs_field.h"
 #include "cs_field_pointer.h"
 #include "cs_field_operator.h"
+#include "cs_math.h"
 #include "cs_mesh.h"
 #include "cs_mesh_quantities.h"
 #include "cs_halo.h"
@@ -116,161 +118,92 @@ BEGIN_C_DECLS
 void
 cs_user_extra_operations(void)
 {
-  FILE *file = NULL;
-  int n_fields = cs_field_n_fields();
+  FILE *file = NULL, *f1 = NULL, *f2 = NULL;
   const cs_lnum_t n_cells     = cs_glob_mesh->n_cells;
   const cs_lnum_t n_cells_ext = cs_glob_mesh->n_cells_with_ghosts;
   const cs_real_t *volume = cs_glob_mesh_quantities->cell_vol;
   const cs_real_3_t *cell_cen = (const cs_real_3_t *)cs_glob_mesh_quantities->cell_cen;
   cs_time_step_t *ts = cs_get_glob_time_step();
-  cs_real_t Pth, Uth, Vth, Tth, xx, yy, zz;
-  cs_real_t *varres;
+  cs_real_t *Per, *Pthvol, *Ter, *Tthvol, xx, yy, zz, Per1, Per2, Perror;
+  cs_real_t Ter1, Ter2, Terror, Uerror, Uthx, Uthy, Uerx, Uery;
+  cs_real_t Pth, Uth, Vth, Tth;
+  cs_real_t *Uer, *Uthvol, *Ver, *Vthvol;
   cs_field_t *sca1 = NULL;
-  cs_solving_info_t sinfo;
-  int ntlist = 1;
-  int *ids;
-
-  /*===============================================================================
-   * 1. Convergence test
-   *===============================================================================*/
-
-  cs_real_t residu = 0.;
-
-  /* Allocate a temporary array for cells or interior/boundary faces selection */
-  BFT_MALLOC(varres, n_fields, cs_real_t);
-  BFT_MALLOC(ids, n_fields, int);
-
-  bool cved = true;
-  int ivar = 0, nvar;
-
-  for (int f_id = 0 ; f_id < n_fields ; f_id++) {
-    cs_field_t *f = cs_field_by_id(f_id);
-    if (f->type & CS_FIELD_VARIABLE) {
-      if (f->id == CS_F_(u)->id) {
-        cs_field_get_key_struct(f, cs_field_key_id("solving_info"), &sinfo);
-        cved = cved && (sinfo.l2residual  <= 1e-04);
-        varres[ivar] = sinfo.l2residual;
-        for (int isou = 0 ; isou < 3 ; isou++)
-          residu += sinfo.l2residual;
-        ids[ivar] = f_id;
-        ivar++;
-      } else {
-        cs_field_get_key_struct(f, cs_field_key_id("solving_info"), &sinfo);
-        cved = cved && (sinfo.l2residual  <= 1e-04);
-        varres[ivar] = sinfo.l2residual;
-        residu += sinfo.l2residual;
-        ids[ivar] = f_id;
-        ivar++;
-      }
-    }
-  }
-
-  nvar = ivar;
-  BFT_REALLOC(varres, nvar, cs_real_t);
-  BFT_REALLOC(ids, nvar, int);
-
-  /* Warning: L2 time residual is computed after extra_operations */
-  cved = cved && (ts->nt_cur > 1);
-
-  if (cved) {
-    ts->nt_max = ts->nt_cur;
-    bft_printf("Converged at %d\n",ts->nt_max);
-  }
-
-  if (cs_glob_rank_id <= 0 && (ts->nt_cur-ts->nt_prev) == 1) {
-    file = fopen("residuals.dat","w");
-    fprintf(file,"#    Time step          Time     Residuals");
-    for (ivar = 0 ; ivar < nvar ; ivar++) {
-      int f_id = ids[ivar];
-      if (ivar < nvar -1)
-        fprintf(file,"          %s",cs_field_by_id(f_id)->name);
-      else
-        fprintf(file,"          %s\n",cs_field_by_id(f_id)->name);
-    }
-    fclose(file);
-  }
-
-  if (cs_glob_rank_id <= 0 && (ts->nt_cur == 1 || ts->nt_cur % ntlist == 0 || ts->nt_cur == ts->nt_max)) {
-    file = fopen("residuals.dat","a");
-    fprintf(file,"%14d %13.5e %13.5e", ts->nt_cur, ts->t_cur, residu);
-    for (ivar = 0 ; ivar < nvar ; ivar++) {
-      if (ivar < nvar -1)
-        fprintf(file,"    %14.5e",varres[ivar]);
-      else
-        fprintf(file,"    %14.5e\n",varres[ivar]);
-    }
-    fclose(file);
-  }
-
-  BFT_FREE(varres);
-  BFT_FREE(ids);
+  cs_real_t uf = 0.5;
 
   /*===============================================================================
    * 2. Compute error
    *===============================================================================*/
 
-  if (ts->nt_cur == ts->nt_max) {
+  BFT_MALLOC(Per, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Pthvol, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Ter, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Tthvol, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Uer, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Uthvol, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Ver, n_cells_ext, cs_real_t);
+  BFT_MALLOC(Vthvol, n_cells_ext, cs_real_t);
 
-    cs_real_t Per, Uer, Ver, Ter, Pcs, Ucs, Vcs, Tcs;
+  int keysca = cs_field_key_id("scalar_id");
 
-    /* Error */
-    Per = 0.;
-    Ter = 0.;
-    Ver = 0.;
-    Uer = 0.;
-
-    cs_real_3_t *vel = (cs_real_3_t *)CS_F_(u)->val;
-
-    int keysca = cs_field_key_id("scalar_id");
-
-    for (int f_id = 0; f_id < cs_field_n_fields(); f_id++) {
-      cs_field_t *f = cs_field_by_id(f_id);
-      if (cs_field_get_key_int(f, keysca) == 1) {
-        sca1 = f;
-        break;
-      }
+  for (int f_id = 0; f_id < cs_field_n_fields(); f_id++) {
+    cs_field_t *f = cs_field_by_id(f_id);
+    if (cs_field_get_key_int(f, keysca) == 1) {
+      sca1 = f;
+      break;
     }
+  }
 
+  cs_real_3_t *vel = (cs_real_3_t *)CS_F_(u)->val;
+
+  if (ts->t_cur >= 0.4096) {
+    ts->nt_max = ts->nt_cur;
+  }
+
+  if (ts->nt_cur == ts->nt_max) {
     for (cs_lnum_t iel = 0 ; iel < n_cells ; iel++) {
       xx = cell_cen[iel][0];
       yy = cell_cen[iel][1];
 
-      Pth = phi(CS_F_(p)->id, xx, yy);
-      Pcs = CS_F_(p)->val[iel];
+      if (fabs(uf - 0.5) < cs_math_epzero) {
+        Pth = phi(CS_F_(p)->id, xx, yy, ts->t_cur) - 0.375;
+      } else {
+        Pth = phi(CS_F_(p)->id, xx, yy, ts->t_cur);
+      }
 
-      Per += pow(Pcs-Pth,2)*volume[iel];
-
-      Uth = phi(CS_F_(u)->id, xx, yy);
-      Ucs = vel[iel][0];
-
-      Uer += pow(Ucs-Uth,2)*volume[iel];
-
-      Vth = phi(CS_F_(u)->id + 100, xx, yy);
-      Vcs = vel[iel][1];
-
-      Ver += pow(Vcs-Vth,2)*volume[iel];
+      Per[iel] = (CS_F_(p)->val[iel]-Pth)*volume[iel];
+      Pthvol[iel] = phi(CS_F_(p)->id, xx, yy, ts->t_cur)*volume[iel];
 
       if (sca1 != NULL) {
-        Tth = phi(sca1->id, xx, yy);
-        Tcs = sca1->val[iel];
-        Ter += pow(Tcs-Tth,2)*volume[iel];
+        Tth = phi(sca1->id, xx, yy, ts->t_cur);
+        Ter[iel] = (sca1->val[iel]-Tth)*volume[iel];
+        Tthvol[iel] = phi(sca1->id, xx, yy, ts->t_cur)*volume[iel];
       }
+
+      Uer[iel] = (vel[iel][0]-phi(CS_F_(u)->id, xx, yy, ts->t_cur))*volume[iel];
+      Ver[iel] = (vel[iel][1]-phi(CS_F_(u)->id+100, xx, yy, ts->t_cur))*volume[iel];
+
+      Uthvol[iel] = phi(CS_F_(u)->id, xx, yy, ts->t_cur)*volume[iel];
+      Vthvol[iel] = phi(CS_F_(u)->id+100, xx, yy, ts->t_cur)*volume[iel];
     }
 
-    if (cs_glob_rank_id >= 0) {
-      cs_parall_sum(1, CS_DOUBLE, &Per);
-      cs_parall_sum(1, CS_DOUBLE, &Uer);
-      cs_parall_sum(1, CS_DOUBLE, &Ver);
-      cs_parall_sum(1, CS_DOUBLE, &Ter);
+    Per1 = sqrt(cs_gres(n_cells, volume, Per, Per));
+    Per2 = sqrt(cs_gres(n_cells, volume, Pthvol, Pthvol));
+
+    Perror = Per1 / Per2;
+
+    if (sca1 != NULL) {
+      Ter1 = sqrt(cs_gres(n_cells, volume, Ter, Ter));
+      Ter2 = sqrt(cs_gres(n_cells, volume, Tthvol, Tthvol));
+      Terror = Ter1 / Ter2;
     }
 
-    cs_real_t voltot = cs_glob_mesh_quantities->tot_vol;
+    Uerx = cs_gres(n_cells, volume, Uer, Uer);
+    Uery = cs_gres(n_cells, volume, Ver, Ver);
+    Uthx = cs_gres(n_cells, volume, Uthvol, Uthvol);
+    Uthy = cs_gres(n_cells, volume, Vthvol, Vthvol);
 
-    Per = sqrt(Per/voltot);
-    Uer = sqrt(Uer/voltot);
-    Ver = sqrt(Ver/voltot);
-    if (sca1 != NULL)
-      Ter = sqrt(Ter/voltot);
+    Uerror = sqrt((Uerx + Uery)/(Uthx + Uthy));
 
     cs_gnum_t gncel = n_cells;
     if(cs_glob_rank_id >= 0)
@@ -280,24 +213,26 @@ cs_user_extra_operations(void)
     if (cs_glob_rank_id <= 0) {
       file = fopen("L2error.dat","w");
       if (sca1 != NULL) {
-        fprintf(file,"#       Ncells  P Error norm  U Error norm  V Error norm  T Error norm\n");
-        fprintf(file,"%14lu %14.5e %14.5e %14.5e %14.5e\n",
-                     gncel, Per, Uer, Ver, Ter);
+        fprintf(file,"#       Ncells  P Error norm  U Error norm  T Error norm\n");
+        fprintf(file,"%14lu %14.5e %14.5e %14.5e\n", gncel, Perror, Uerror, Terror);
       } else {
-        fprintf(file,"#       Ncells  P Error norm  U Error norm  V Error norm\n");
-        fprintf(file,"%14lu %14.5e %14.5e %14.5e\n",
-                     gncel, Per, Uer, Ver);
+        fprintf(file,"#       Ncells  P Error norm  U Error norm\n");
+        fprintf(file,"%14lu %14.5e %14.5e\n", gncel, Perror, Uerror);
       }
       fclose(file);
     }
 
     /* Writing CS profile */
     if (cs_glob_rank_id <= 0) {
-      file = fopen("profile.dat","w");
-      if (sca1 != NULL)
-        fprintf(file,"# x U V P T\n");
-      else
-        fprintf(file,"# x U V P\n");
+      f1 = fopen("profile.dat","w");
+      f2 = fopen("solth_discrete.dat","w");
+      if (sca1 != NULL) {
+        fprintf(f1,"# x U P T\n");
+        fprintf(f2,"# x U P T\n");
+      } else {
+        fprintf(f1,"# x U P\n");
+        fprintf(f2,"# x U P\n");
+      }
     }
 
     cs_lnum_t npoint = ceil(sqrt((double)gncel));
@@ -306,8 +241,8 @@ cs_user_extra_operations(void)
     cs_real_t xabs, xu, xv, xp, xt;
 
     for (cs_lnum_t ii = 0 ; ii < npoint ; ii++) {
-      xx = (double)ii/(double)(npoint-1)*1.;
-      yy = 0.8;
+      xx = (double)ii/(double)(npoint-1)*2.;
+      yy = 1.8;
       zz = 0.;
 
       CS_PROCF(findpt, FINDPT)(&n_cells_ext, &n_cells, (cs_real_t *)cell_cen,
@@ -328,6 +263,16 @@ cs_user_extra_operations(void)
             xt = sca1->val[iel];
           else
             xt = 0.;
+
+          Pth = phi(CS_F_(p)->id, xabs, 1.8, ts->t_cur);
+          Uth = phi(CS_F_(u)->id, xabs, 1.8, ts->t_cur);
+          Vth = phi(CS_F_(u)->id+100, xabs, 1.8, ts->t_cur);
+
+          if (sca1 != NULL)
+            Tth = phi(sca1->id, xabs, 1.8, ts->t_cur);
+          else
+            Tth = 0.;
+
         } else {
           xabs = 0.;
           xu = 0.;
@@ -343,44 +288,59 @@ cs_user_extra_operations(void)
           cs_parall_bcast(irangv, 1, CS_DOUBLE, &xv);
           cs_parall_bcast(irangv, 1, CS_DOUBLE, &xp);
           cs_parall_bcast(irangv, 1, CS_DOUBLE, &xt);
+          cs_parall_bcast(irangv, 1, CS_DOUBLE, &Uth);
+          cs_parall_bcast(irangv, 1, CS_DOUBLE, &Vth);
+          cs_parall_bcast(irangv, 1, CS_DOUBLE, &Pth);
+          cs_parall_bcast(irangv, 1, CS_DOUBLE, &Tth);
         }
 
         if (cs_glob_rank_id <= 0) {
           if (sca1 != NULL) {
-          fprintf(file,"%14.5e %14.5e %14.5e %14.5e %14.5e\n",
-                       xabs, xu, xv, xp, xt);
+                  fprintf(f1,"%14.5e %14.5e %14.5e %14.5e %14.5e\n",
+                             xabs, xu, xv, xp, xt);
+                  fprintf(f2,"%14.5e %14.5e %14.5e %14.5e %14.5e\n",
+                             xabs, Uth, Vth, Pth, Tth);
           } else {
-          fprintf(file,"%14.5e %14.5e %14.5e %14.5e\n",
-                       xabs, xu, xv, xp);
+                  fprintf(f1,"%14.5e %14.5e %14.5e %14.5e\n",
+                             xabs, xu, xv, xp);
+                  fprintf(f2,"%14.5e %14.5e %14.5e %14.5e\n",
+                             xabs, Uth, Vth, Pth);
           }
         }
       }
     }
 
-    if (cs_glob_rank_id <= 0)
-      fclose(file);
+    if (cs_glob_rank_id <= 0) {
+      fclose(f1);
+      fclose(f2);
+    }
   }
 
   /*===============================================================================
    * 3. Save analytical solution
    *===============================================================================*/
 
-  if (cs_glob_rank_id <= 0 && ts->nt_cur == ts->nt_max) {
+  bool soltheo = true;
+
+  if (cs_glob_rank_id <= 0 && ts->nt_cur == ts->nt_max && soltheo) {
     file = fopen("theory.dat","w");
-    fprintf(file,"# x Uth Vth Pth Tth\n");
+    if (sca1 != NULL)
+      fprintf(file,"# x Uth Vth Pth Tth\n");
+    else
+      fprintf(file,"# x Uth Vth Pth\n");
 
     /* Analytical solution */
-    cs_lnum_t npoint = 100;
+    cs_lnum_t npoint = 400;
 
     for (cs_lnum_t ii = 0 ; ii < npoint ; ii++) {
-      xx = (double)ii/(double)(npoint-1)*1.;
-      yy = 0.8;
-      Pth = phi(CS_F_(p)->id, xx, yy);
-      Uth = phi(CS_F_(u)->id, xx, yy);
-      Vth = phi(CS_F_(u)->id + 100, xx, yy);
+      xx = (double)ii/(double)(npoint-1)*2.;
+      yy = 1.8;
+      Pth = phi(CS_F_(p)->id, xx, yy, ts->t_cur);
+      Uth = phi(CS_F_(u)->id, xx, yy, ts->t_cur);
+      Vth = phi(CS_F_(u)->id + 100, xx, yy, ts->t_cur);
 
       if (sca1 != NULL) {
-        Tth = phi(sca1->id, xx, yy);
+        Tth = phi(sca1->id, xx, yy, ts->t_cur);
         fprintf(file,"%14.5e %14.5e %14.5e %14.5e %14.5e\n",
                      xx, Uth, Vth, Pth, Tth);
       } else {
@@ -390,6 +350,15 @@ cs_user_extra_operations(void)
     }
     fclose(file);
   }
+
+  BFT_FREE(Per);
+  BFT_FREE(Ter);
+  BFT_FREE(Uer);
+  BFT_FREE(Ver);
+  BFT_FREE(Pthvol);
+  BFT_FREE(Uthvol);
+  BFT_FREE(Vthvol);
+  BFT_FREE(Tthvol);
 }
 
 END_C_DECLS

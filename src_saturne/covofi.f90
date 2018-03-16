@@ -83,7 +83,7 @@ subroutine covofi &
    itypsm , itypcd , itypst ,                                     &
    dt     , tslagr ,                                              &
    ckupdc , smacel , spcond , svcond , flxmst ,                   &
-   viscf  , viscb  )
+   viscf  , viscb, iter_sca,icvrge)
 
 !===============================================================================
 
@@ -127,7 +127,7 @@ implicit none
 
 integer          nvar   , nscal
 integer          ncepdp , ncesmp , nfbpcd ,  ncmast
-integer          iscal  , itspdv
+integer          iscal  , itspdv, iter_sca, icvrge
 
 integer          icepdc(ncepdp)
 integer          icetsm(ncesmp), itypsm(ncesmp,nvar)
@@ -140,6 +140,7 @@ double precision ckupdc(ncepdp,6), smacel(ncesmp,nvar)
 double precision spcond(nfbpcd,nvar)
 double precision svcond(ncelet,nvar), flxmst(ncelet)
 double precision viscf(nfac), viscb(nfabor)
+
 
 ! Local variables
 
@@ -169,7 +170,8 @@ double precision thetv , thets , thetap, thetp1
 double precision smbexp, dvar, cprovol, prod, expkdt
 double precision temp, idifftp, roskpl, kplskm, ctot_tmp
 double precision turb_schmidt
-
+double precision vark(ncelet)
+double precision xvarmu, xvarmu0, xdvar, xvartmp
 double precision rvoid(1)
 
 double precision, allocatable, dimension(:) :: w1, smbrs, rovsdt
@@ -242,16 +244,6 @@ call field_get_val_s(iflmab, bmasfl)
 
 call field_get_key_struct_var_cal_opt(ivarfl(ivar), vcopt)
 
-if (vcopt%iwgrec.eq.1) then
-  ! Id weighting field for gradient
-  call field_get_key_int(iflid, kwgrec, iflwgr)
-  call field_get_dim(iflwgr, f_dim)
-  if (f_dim.gt.1) then
-    call field_get_val_v(iflwgr, cpro_wgrec_v)
-  else
-    call field_get_val_s(iflwgr, cpro_wgrec_s)
-  endif
-endif
 
 ! Allocate temporary arrays
 allocate(w1(ncelet))
@@ -310,7 +302,7 @@ endif
 ! S pour Source, V pour Variable
 thets  = thetss(iscal)
 thetv  = vcopt%thetav
-
+print*,"thetav in covofi", thetv
 call field_get_name(ivarfl(ivar), chaine)
 
 if(vcopt%iwarni.ge.1) then
@@ -368,9 +360,7 @@ do iel = 1, ncel
   rovsdt(iel) = 0.d0
   smbrs(iel) = 0.d0
 enddo
-
 if (iihmpr.eq.1) then
-
   if (iscal.ne.iscalt) then
     call uitssc &
     ( ippmod(idarcy), iflid  , cvar_var , smbrs  , rovsdt )
@@ -424,22 +414,6 @@ if (ippmod(iatmos).ge.0) then
   endif
 endif
 
-! Atmospheric chemistry
-! In case of a semi-coupled resolution, computation of the explicit
-! chemical source term to be considered during dynamical resolution
-! The first nespg user scalars are supposed to be chemical species
-if ((ichemistry.ge.1).and.(isepchemistry.eq.2)                    &
-     .and.(iscal.le.nespg).and.(ntcabs.gt.1)) then
-  call chem_source_terms(iscal, smbrs, rovsdt)
-endif
-
-
-! Precipitation/dissolution for lagrangian module
-! Calculation of source terms du to precipitation and dissolution phenomena
-if (ipreci.eq.1.and.iscal.eq.1) then
-  call precst(dtref, crom, cvar_var, smbrs)
-endif
-
 ! Si on extrapole les TS :
 !   SMBRS recoit -theta TS du pas de temps precedent
 !     (on aurait pu le faire avant ustssc, mais avec le risque que
@@ -449,6 +423,7 @@ endif
 !     on implicite le terme (donc ROVSDT*RTPA va dans SMBRS)
 !   En std, on adapte le traitement au signe de ROVSDT, mais ROVSDT*RTPA va
 !     quand meme dans SMBRS (pas d'autre choix)
+!print*,"cproa_scal_st before written", cproa_scal_st(50)
 if (st_prv_id .ge. 0) then
   do iel = 1, ncel
     ! Stockage temporaire pour economiser un tableau
@@ -462,7 +437,6 @@ if (st_prv_id .ge. 0) then
     ! Diagonale
     rovsdt(iel) = - thetv*rovsdt(iel)
   enddo
-
 ! Si on n'extrapole pas les TS :
 else
   do iel = 1, ncel
@@ -472,7 +446,7 @@ else
     rovsdt(iel) = max(-rovsdt(iel),zero)
   enddo
 endif
-
+!print*,"cproa_scal_st after written", cproa_scal_st(50)
 ! Add thermodynamic pressure variation for the low-Mach algorithm:
 ! NB: iscalt is the Enthalpy
 if ((idilat.eq.3.or.ipthrm.eq.1).and.iscal.eq.iscalt) then
@@ -481,431 +455,6 @@ if ((idilat.eq.3.or.ipthrm.eq.1).and.iscal.eq.iscalt) then
   enddo
 endif
 
-! --> Couplage volumique avec Syrthes
-!     Ordre 2 non pris en compte
-
-if (iscal.eq.iscalt) then
-  call cptssy(iscal, smbrs, rovsdt)
-endif
-
-! --> Physique particulieres
-!     Ordre 2 non pris en compte
-
-if (ippmod(iphpar).ge.1) then
-  call pptssc(iscal, smbrs, rovsdt, tslagr)
-endif
-
-! --> Rayonnement
-!     Ordre 2 non pris en compte
-
-if (iirayo.ge.1) then
-
-  if (iscal.eq.iscalt) then
-    call cs_rad_transfer_source_terms(smbrs, rovsdt)
-
-    ! Store the explicit radiative source term
-    if (idilat.ge.4) then
-      call field_get_id("rad_st", f_id)
-      call field_get_val_s(f_id,cpro_tsre1)
-      do iel = 1, ncel
-        cpro_tsscal(iel) = cpro_tsscal(iel)   &
-        + cpro_tsre1(iel)*cell_f_vol(iel)
-      enddo
-    endif
-  endif
-
-  !-> Charbon pulverise
-  !   Ordre 2 non pris en compte
-  ! new model
-  if (ippmod(iccoal) .ge. 0) then
-    if (isca(iscal).ge.isca(ih2(1)) .and.       &
-        isca(iscal).le.isca(ih2(nclacp))) then
-
-      call cs_coal_radst &
-      !=================
-      ( ivar   , ncelet , ncel  ,               &
-        cell_f_vol , smbrs , rovsdt )
-
-    endif
-
-    if (iscal .eq.ihgas) then
-      call field_get_id("rad_st", f_id)
-      call field_get_val_s(f_id, cpro_tsre1)
-      do iel = 1, ncel
-        smbrs(iel) = smbrs(iel)+volume(iel)*cpro_tsre1(iel)
-      enddo
-
-      do icla = 1, nclacp
-        write(f_name,  '("rad_st_", i2.2)') icla+1
-        call field_get_id(f_name, f_id)
-        call field_get_val_s(f_id, cpro_tsre)
-        call field_get_val_s(ix2(icla), cpro_x2icla)
-        do iel = 1, ncel
-          smbrs(iel) = smbrs(iel)-volume(iel)*cpro_tsre(iel) &
-                                             *cpro_x2icla(iel)
-        enddo
-      enddo
-    endif
-  endif
-
-  ! -> Fuel
-  !    Ordre 2 non pris en compte
-  !    Pour l'instant rayonnement non compatible avec Fuel
-
-  if (ippmod(icfuel) .ge. 0) then
-    if (isca(iscal).ge.isca(ih2(1)) .and.       &
-        isca(iscal).le.isca(ih2(nclafu))) then
-
-      call cs_fuel_radst &
-     !==================
-     ( ivar   , ncelet , ncel  ,                &
-       cell_f_vol , smbrs , rovsdt)
-
-    endif
-  endif
-
-endif
-
-! --> Lagrangien (couplage retour thermique)
-!     Ordre 2 non pris en compte
-
-if (iilagr.eq.2 .and. ltsthe.eq.1)  then
-
-  if (iscal.eq.iscalt .and. (itherm.eq.1 .or. itherm.eq.2)) then
-
-    do iel = 1, ncel
-      smbrs (iel) = smbrs(iel)  + tslagr(iel,itste)
-      rovsdt(iel) = rovsdt(iel) + xcpp(iel)*max(tslagr(iel,itsti),zero)
-    enddo
-
-  endif
-
-endif
-
-! Mass source term
-
-if (ncesmp.gt.0) then
-
-  ! Entier egal a 1 (pour navsto : nb de sur-iter)
-  iiun = 1
-
-  allocate(srcmas(ncesmp))
-
-  ! When treating the Temperature, the equation is multiplied by Cp
-  do iel = 1, ncesmp
-    if (smacel(iel,ipr).gt.0.d0 .and.itypsm(iel,ivar).eq.1) then
-      srcmas(iel) = smacel(iel,ipr)*xcpp(icetsm(iel))
-    else
-      srcmas(iel) = 0.d0
-    endif
-  enddo
-
-  ! On incremente SMBRS par -Gamma RTPA et ROVSDT par Gamma
-  call catsma &
-  !==========
- ( ncelet , ncel   , ncesmp , iiun   , isso2t(iscal) ,            &
-   icetsm , itypsm(1,ivar) ,                                      &
-   cell_f_vol , cvara_var    , smacel(1,ivar) , srcmas   ,        &
-   smbrs  , rovsdt , w1)
-
-  deallocate(srcmas)
-
-  ! Si on extrapole les TS on met Gamma Pinj dans cproa_scal_st
-  if (st_prv_id .ge. 0) then
-    do iel = 1, ncel
-      cproa_scal_st(iel) = cproa_scal_st(iel) + w1(iel)
-    enddo
-  ! Sinon on le met directement dans SMBRS
-  else
-    do iel = 1, ncel
-      smbrs(iel) = smbrs(iel) + w1(iel)
-    enddo
-  endif
-
-endif
-
-! Condensation source terms for the scalars
-! associated to a surface zone (icondb=0)
-if (nfbpcd.gt.0) then
-
-  allocate(srccond(nfbpcd))
-
-  ! When treating the Temperature, the equation is multiplied by Cp
-  do ii = 1, nfbpcd
-    ifac= ifbpcd(ii)
-    iel = ifabor(ifac)
-
-    if (spcond(ii,ipr).lt.0.d0 .and.itypcd(ii,ivar).eq.1) then
-      srccond(ii) = spcond(ii,ipr)*xcpp(iel)
-    else
-      srccond(ii) = 0.d0
-    endif
-  enddo
-
-  call condensation_source_terms &
-  !=============================
-  (ncelet , ncel ,                                       &
-   iscal  ,                                              &
-   nfbpcd , ifbpcd  , itypcd(1,ivar) ,                   &
-   0      , ivoid   , ivoid          ,                   &
-   spcond(1,ivar)   , srccond        ,                   &
-   rvoid  , rvoid   , rvoid          ,                   &
-   cvara_var        ,                                    &
-   smbrs            , rovsdt )
-
-  deallocate(srccond)
-
-endif
-
-! Condensation source terms for the scalars
-! associated to a volumic zone (icondv=0)
-! taking into account the metal mass
-! structures condensation modelling
-if (icondv.eq.0) then
-  allocate(srcmst(ncelet))
-
-  ! When treating the Temperature, the equation is multiplied by Cp
-  do ii = 1, ncmast
-    iel = ltmast(ii)
-
-    if (svcond(iel,ipr).lt.0.d0 .and.itypst(ii,ivar).eq.1) then
-      srcmst(iel) = svcond(iel,ipr)*xcpp(iel)
-    else
-      srcmst(iel) = 0.d0
-    endif
-  enddo
-
-  call condensation_source_terms &
-  !=============================
-  (ncelet , ncel ,                                       &
-   iscal  ,                                              &
-   0      , ivoid   , ivoid          ,                   &
-   ncmast , ltmast  , itypst(1,ivar) ,                   &
-   rvoid  , rvoid   ,                                    &
-   svcond(1,ivar)   , srcmst         , flxmst  ,         &
-   cvara_var        ,                                    &
-   smbrs            , rovsdt )
-
-  deallocate(srcmst)
-
-endif
-
-
-! If the current scalar is the variance of an other scalar,
-! production and dissipation terms are added.
-if (itspdv.eq.1) then
-
-  if (itytur.eq.2 .or. itytur.eq.3 .or. itytur.eq.5 .or. iturb.eq.60) then
-
-    ! Allocate a temporary array for the gradient reconstruction
-    allocate(grad(3,ncelet))
-    allocate(coefa_p(nfabor), coefb_p(nfabor))
-
-    ! Remarque : on a prevu la possibilite de scalaire associe non
-    !  variable de calcul, mais des adaptations sont requises
-
-    if (ivarsc.le.0) then
-      write(nfecra,9000)ivarsc
-      call csexit(1)
-    endif
-
-    iprev = 1
-    inc = 1
-    iccocg = 1
-
-    ! Homogeneous Neumann on convective inlet on the production term for the
-    ! variance
-    call field_get_val_prev_s(ivarfl(ivarsc), cvara_varsca)
-    call field_get_coefa_s (ivarfl(ivarsc), coefap)
-    call field_get_coefb_s (ivarfl(ivarsc), coefbp)
-
-    ! pas de diffusion en entree
-    do ifac = 1, nfabor
-      coefa_p(ifac) = coefap(ifac)
-      coefb_p(ifac) = coefbp(ifac)
-      if (itypfb(ifac).eq.i_convective_inlet) then
-        coefa_p(ifac) = 0.d0
-        coefb_p(ifac) = 1.d0
-      endif
-    enddo
-
-    call field_get_key_struct_var_cal_opt(ivarfl(ivarsc), vcopt_varsc)
-
-    nswrgp = vcopt_varsc%nswrgr
-    imligp = vcopt_varsc%imligr
-    iwarnp = vcopt_varsc%iwarni
-    epsrgp = vcopt_varsc%epsrgr
-    climgp = vcopt_varsc%climgr
-    extrap = vcopt_varsc%extrag
-
-    call gradient_s                                                          &
-     ( ivarfl(ivarsc)  , imrgra , inc    , iccocg , nswrgp , imligp ,        &
-       iwarnp          , epsrgp , climgp , extrap ,                          &
-       cvara_varsca    , coefa_p, coefb_p,                                   &
-       grad )
-
-    deallocate (coefa_p, coefb_p)
-
-    ! Production Term
-
-    ! NB: diffusivity is clipped to 0 because in LES, it might be negative. Problematic
-    ! for the variance even if it is strange to use variance and LES ...
-
-    ! Time extrapolation (2nd order)
-    if (st_prv_id .ge. 0) then
-
-      ! Not extapolated value of the viscosity
-      call field_get_val_s(ivisct, cpro_visct)
-      if (iviext.gt.0) call field_get_val_prev_s(ivisct, cpro_visct)
-
-      ! iscal is the variance of the scalar iiscav
-      ! with modelized turbulent fluxes GGDH or AFM or DFM
-      if (ityturt(iiscav).ge.1) then
-
-        ! Name of the scalar iiscav associated to the variance iscal
-        call field_get_name(ivarfl(ivarsc), fname)
-
-        ! Index of the corresponding turbulent flux
-        call field_get_id(trim(fname)//'_turbulent_flux', f_id)
-
-        call field_get_val_v(f_id, xut)
-
-        do iel = 1, ncel
-          cproa_scal_st(iel) = cproa_scal_st(iel)                              &
-                             - 2.d0*xcpp(iel)*cell_f_vol(iel)*crom(iel)        &
-                                          *(xut(1,iel)*grad(1,iel)             &
-                                           +xut(2,iel)*grad(2,iel)             &
-                                           +xut(3,iel)*grad(3,iel) )
-        enddo
-      ! SGDH model
-      else
-        do iel = 1, ncel
-          cproa_scal_st(iel) = cproa_scal_st(iel)                             &
-               + 2.d0*xcpp(iel)*max(cpro_visct(iel),zero)                     &
-               *cell_f_vol(iel)/turb_schmidt                                 &
-               *(grad(1,iel)**2 + grad(2,iel)**2 + grad(3,iel)**2)
-        enddo
-      endif
-
-    ! If not time extrapolation...
-    else
-
-      call field_get_val_s(ivisct, cpro_visct)
-
-      ! iscal is the variance of the scalar iiscav
-      ! with modelized turbulent fluxes GGDH or AFM or DFM
-      if (ityturt(iiscav).ge.1) then
-
-
-        ! Name of the scalar ivarsc associated to the variance iscal
-        call field_get_name(ivarfl(ivarsc), fname)
-
-        ! Index of the corresponding turbulent flux
-        call field_get_id(trim(fname)//'_turbulent_flux', f_id)
-
-        call field_get_val_v(f_id, xut)
-
-        do iel = 1, ncel
-          cprovol = xcpp(iel)*cell_f_vol(iel)*crom(iel)
-          ! Special time stepping to ensure positivity of the variance
-          prod = -2.d0 * (xut(1,iel)*grad(1,iel)      &
-                         +xut(2,iel)*grad(2,iel)      &
-                         +xut(3,iel)*grad(3,iel) )
-
-          smbrs(iel) = smbrs(iel) + max(prod * cprovol, 0.d0)
-
-          ! Implicit "production" term when negative, but check if the
-          ! variance is non-zero.
-          if (cvar_var(iel).gt. epzero * abs(prod * dt(iel)) &
-            .and.prod*cprovol.lt.0.d0) then
-            rovsdt(iel) = rovsdt(iel)  &
-                        - prod * cprovol / cvar_var(iel)
-          endif
-        enddo
-
-      ! SGDH model
-      else
-        do iel = 1, ncel
-          smbrs(iel) = smbrs(iel)                                            &
-                     + 2.d0*xcpp(iel)*max(cpro_visct(iel),zero)           &
-                     * cell_f_vol(iel)/turb_schmidt                       &
-                     * (grad(1,iel)**2 + grad(2,iel)**2 + grad(3,iel)**2)
-        enddo
-      endif
-
-      ! Production term for a variance  TODO compute ustdy when isso2t >0
-      if (idilat.ge.4) then
-        do iel = 1, ncel
-          cpro_tsscal(iel) = cpro_tsscal(iel) +                   &
-               2.d0*xcpp(iel)*max(cpro_visct(iel),zero)        &
-             *cell_f_vol(iel)/turb_schmidt                     &
-             *(grad(1,iel)**2 + grad(2,iel)**2 + grad(3,iel)**2)
-        enddo
-      endif
-    endif
-
-    ! Free memory
-    deallocate(grad)
-
-    ! Dissipation term
-    if (st_prv_id .ge. 0) then
-      thetap = thetv
-    else
-      thetap = 1.d0
-    endif
-
-    if (itytur.eq.2 .or. itytur.eq.5) then
-      call field_get_val_prev_s(ivarfl(ik), cvara_k)
-      call field_get_val_prev_s(ivarfl(iep), cvara_ep)
-    elseif (itytur.eq.3) then
-      call field_get_val_prev_s(ivarfl(iep), cvara_ep)
-      if (irijco.eq.1) then
-        call field_get_val_prev_v(ivarfl(irij), cvara_rij)
-      else
-        call field_get_val_prev_s(ivarfl(ir11), cvara_r11)
-        call field_get_val_prev_s(ivarfl(ir22), cvara_r22)
-        call field_get_val_prev_s(ivarfl(ir33), cvara_r33)
-      endif
-    elseif(iturb.eq.60) then
-      call field_get_val_prev_s(ivarfl(ik), cvara_k)
-      call field_get_val_prev_s(ivarfl(iomg), cvara_omg)
-    endif
-
-    do iel = 1, ncel
-      if (itytur.eq.2 .or. itytur.eq.5) then
-        xk = cvara_k(iel)
-        xe = cvara_ep(iel)
-      elseif (itytur.eq.3) then
-        if (irijco.eq.1) then
-          xk = 0.5d0*(cvara_rij(1,iel)+cvara_rij(2,iel)+cvara_rij(3,iel))
-          xe = cvara_ep(iel)
-        else
-          xk = 0.5d0*(cvara_r11(iel)+cvara_r22(iel)+cvara_r33(iel))
-          xe = cvara_ep(iel)
-        endif
-      elseif(iturb.eq.60) then
-        xk = cvara_k(iel)
-        xe = cmu*xk*cvara_omg(iel)
-      endif
-
-      ! Implicit term -1/Rh * Eps/k * Variance
-      !  with
-      ! Rh = R = 0.8 for SGDH
-      ! Rh = (1-alpha_T) * Pr + R * alpha_T
-      !  and R = 0.5
-
-      rhovst = xcpp(iel)*crom(iel)*xe/(xk * rvarfl(iscal))       &
-             *cell_f_vol(iel) ! FIXME wrong time scale for EBDFM and the others... R simeq 0.5...
-
-      ! La diagonale recoit eps/Rk, (*theta eventuellement)
-      rovsdt(iel) = rovsdt(iel) + rhovst*thetap
-      ! SMBRS recoit la dissipation
-      smbrs(iel) = smbrs(iel) - rhovst*cvara_var(iel)
-    enddo
-
-  endif
-
-endif
 
 if (st_prv_id .ge. 0) then
   thetp1 = 1.d0 + thets
@@ -918,7 +467,6 @@ endif
 ! Same algo. for Volume of Fluid method
 if (idilat.gt.1 .or. ivofmt.ge.0) then
   call field_get_val_prev_s(icrom_scal, pcrom)
-
 ! Standard algo
 else
   call field_get_val_s(icrom_scal, pcrom)
@@ -967,92 +515,10 @@ if (vcopt%idiff.ge.1) then
    ( imvisf ,                      &
      w1     ,                      &
      viscf  , viscb  )
-
-  ! Symmetric tensor diffusivity (GGDH)
-  elseif (vcopt%idften.eq.6) then
-
-    ! Allocate temporary arrays
-    allocate(viscce(6,ncelet))
-    allocate(weighf(2,nfac))
-    allocate(weighb(nfabor))
-
-    if (iturb.ne.32) then
-      call field_get_val_v(ivsten, visten)
-    else ! EBRSM and (GGDH or AFM)
-      call field_get_val_v(ivstes, visten)
-    endif
-
-    if (ifcvsl.lt.0) then
-      do iel = 1, ncel
-
-        temp = vcopt%idifft*xcpp(iel)*ctheta(iscal)/csrij
-        viscce(1,iel) = temp*visten(1,iel) + visls0(iscal)
-        viscce(2,iel) = temp*visten(2,iel) + visls0(iscal)
-        viscce(3,iel) = temp*visten(3,iel) + visls0(iscal)
-        viscce(4,iel) = temp*visten(4,iel)
-        viscce(5,iel) = temp*visten(5,iel)
-        viscce(6,iel) = temp*visten(6,iel)
-
-      enddo
-    else
-      do iel = 1, ncel
-
-        temp = vcopt%idifft*xcpp(iel)*ctheta(iscal)/csrij
-        viscce(1,iel) = temp*visten(1,iel) + cpro_viscls(iel)
-        viscce(2,iel) = temp*visten(2,iel) + cpro_viscls(iel)
-        viscce(3,iel) = temp*visten(3,iel) + cpro_viscls(iel)
-        viscce(4,iel) = temp*visten(4,iel)
-        viscce(5,iel) = temp*visten(5,iel)
-        viscce(6,iel) = temp*visten(6,iel)
-
-      enddo
-    endif
-
-    iwarnp = vcopt%iwarni
-
-    if (vcopt%iwgrec.eq.1) then
-      ! Weighting for gradient
-      do iel = 1, ncel
-        do isou = 1, 6
-          cpro_wgrec_v(isou,iel) = viscce(isou,iel)
-        enddo
-      enddo
-      call syntis(cpro_wgrec_v)
-    endif
-
-    call vitens &
-    !==========
-   ( viscce , iwarnp ,             &
-     weighf , weighb ,             &
-     viscf  , viscb  )
-
   endif
 
   ! AFM model or DFM models: add div(Cp*rho*T'u') to smbrs
   ! Compute T'u' for GGDH
-  if (ityturt(iscal).ge.1) then
-
-
-    ! EB-GGDH/AFM/DFM: solving alpha for the scalar
-    if (iturt(iscal).eq.11.or.iturt(iscal).eq.21.or.iturt(iscal).eq.31) then
-      ! Name of the scalar
-      call field_get_name(ivarfl(isca(iscal)), fname)
-
-      ! Index of the corresponding turbulent flux
-      call field_get_id(trim(fname)//'_alpha', f_id)
-
-      call resalp(f_id, xclt)
-    endif
-
-    call divrit &
-    !==========
-    ( nscal  ,                                                       &
-      iscal  ,                                                       &
-      dt     ,                                                       &
-      xcpp   ,                                                       &
-      smbrs  )
-
-  endif
 
 else
 
@@ -1065,122 +531,19 @@ else
 
 endif
 
-! Retrieve sorption options for current scalar for ground water flow module
-if (ippmod(idarcy).eq.1) then
-  call field_get_key_struct_gwf_soilwater_partition(ivarfl(ivar), sorption_scal)
-  call field_get_val_s(sorption_scal%idel, cpro_delay)
-  call field_get_val_prev_s(sorption_scal%idel, cproa_delay)
-  call field_get_val_prev_s_by_name('saturation', cproa_sat)
-  call field_get_val_s_by_name('saturation', cpro_sat)
-
-  ! Retrieve fields for EK model
-  if (sorption_scal%kinetic.eq.1) then
-    call field_get_val_s_by_name('soil_density', cpro_rosoil)
-    call field_get_val_s(sorption_scal%ikp, cpro_kplus)
-    call field_get_val_s(sorption_scal%ikm, cpro_kminus)
-    call field_get_key_id("gwf_sorbed_concentration_id", keysrb)
-    call field_get_key_int(ivarfl(ivar), keysrb, isorb)
-    call field_get_val_s(isorb, cpro_sorb)
-  endif
-endif
 
 ! Not Darcy
-if (ippmod(idarcy).eq.-1) then
 
+if (ippmod(idarcy).eq.-1) then
   ! --> Unsteady term and mass aggregation term
   do iel = 1, ncel
     rovsdt(iel) = rovsdt(iel)                                                 &
                 + vcopt%istat*xcpp(iel)*pcrom(iel)*cell_f_vol(iel)/dt(iel)
   enddo
-! Darcy : we take into account the porosity and delay for underground transport
-else
-  do iel = 1, ncel
-    smbrs(iel) = smbrs(iel)*cpro_delay(iel)*cpro_sat(iel)
-    rovsdt(iel) = (rovsdt(iel) + vcopt%istat*xcpp(iel)*pcrom(iel) &
-                                *volume(iel)/dt(iel))             &
-                 *cpro_delay(iel)*cpro_sat(iel)
-  enddo
-
-  ! treatment of kinetic sorption
-  if (sorption_scal%kinetic.eq.1) then
-    do iel = 1,ncel
-      ! case of irreversible sorption
-      if (cpro_kminus(iel).gt.epzero) then
-        expkdt = exp(-cpro_kminus(iel)*dt(iel))
-        kplskm = cpro_kplus(iel)/cpro_kminus(iel)
-        smbrs(iel) = smbrs(iel)   - volume(iel)/dt(iel)*cpro_rosoil(iel)   &
-                                   *(1-expkdt)                             &
-                                   *(kplskm *cvar_var(iel)-cpro_sorb(iel))
-        rovsdt(iel) = rovsdt(iel) + volume(iel)/dt(iel)*cpro_rosoil(iel)   &
-                                   *(1-expkdt)*kplskm
-      ! general case (reversible sorption)
-      else
-        roskpl = cpro_rosoil(iel)*cpro_kplus(iel)
-        smbrs(iel) = smbrs(iel) - volume(iel)/dt(iel)*roskpl*cvar_var(iel)
-        rovsdt(iel) = rovsdt(iel) + volume(iel)/dt(iel)*roskpl*cvar_var(iel)
-      endif
-    enddo
-  endif
-
 endif
-
-! Scalar with a Drift:
-! compute the convective flux
-!----------------------------
 
 call field_get_key_int(iflid, keydri, iscdri)
 
-if (iscdri.ge.1) then
-  allocate(divflu(ncelet))
-
-  call driflu &
-  !=========
-  ( iflid  ,                                                       &
-    dt     ,                                                       &
-    imasfl , bmasfl ,                                              &
-    divflu )
-
-  iconvp = vcopt%iconv
-  thetap = vcopt%thetav
-
-  ! NB: if the porosity module is swiched on, the the porosity is already
-  ! taken into account in divflu
-
-  ! --> mass aggregation term
-  do iel = 1, ncel
-    rovsdt(iel) = rovsdt(iel) + iconvp*thetap*divflu(iel)
-    smbrs(iel) = smbrs(iel) - iconvp*divflu(iel)*cvara_var(iel)
-  enddo
-
-  deallocate(divflu)
-endif
-
-! Darcy:
-! This step is necessary because the divergence of the
-! hydraulic head (or pressure), which is taken into account as the
-! 'aggregation term' via codits -> bilsca -> bilsc2,
-! is not exactly equal to the loss of mass of water in the unsteady case
-! (just as far as the precision of the Newton scheme is good),
-! and does not take into account the sorption of the tracer
-! (represented by the 'delay' coefficient).
-! We choose to 'cancel' the aggregation term here, and to add to smbr
-! (right hand side of the transport equation)
-! the necessary correction to take sorption into account and get the exact
-! conservation of the mass of tracer.
-
-if (ippmod(idarcy).eq.1) then
-  if (darcy_unsteady.eq.1) then
-    call divmas(1, imasfl , bmasfl , diverg)
-    do iel = 1, ncel
-      smbrs(iel) = smbrs(iel) - diverg(iel)*cvar_var(iel)                   &
-        + cell_f_vol(iel)/dt(iel)*cvar_var(iel)                             &
-        *( cproa_delay(iel)*cproa_sat(iel) - cpro_delay(iel)*cpro_sat(iel))
-    enddo
-    do iel = 1, ncel
-      rovsdt(iel) = rovsdt(iel) + thetv*diverg(iel)
-    enddo
-  endif
-endif
 
 !===============================================================================
 ! 3. Solving
@@ -1213,23 +576,72 @@ call field_get_coefa_s(ivarfl(ivar), coefap)
 call field_get_coefb_s(ivarfl(ivar), coefbp)
 call field_get_coefaf_s(ivarfl(ivar), cofafp)
 call field_get_coefbf_s(ivarfl(ivar), cofbfp)
+if(iter_sca .gt. 1) then
 
-call codits &
-!==========
- ( idtvar , ivarfl(ivar)    , iconvp , idiffp , ndircp ,          &
-   imrgra , nswrsp , nswrgp , imligp , ircflp ,                   &
-   ischcp , isstpp , iescap , imucpp , idftnp , iswdyp ,          &
-   iwarnp ,                                                       &
-   blencp , epsilp , epsrsp , epsrgp , climgp , extrap ,          &
-   relaxp , thetv  ,                                              &
-   cvara_var       , cvara_var       ,                            &
-   coefap , coefbp , cofafp , cofbfp ,                            &
-   imasfl , bmasfl ,                                              &
-   viscf  , viscb  , viscf  , viscb  , viscce ,                   &
-   weighf , weighb ,                                              &
-   icvflb , ivoid  ,                                              &
-   rovsdt , smbrs  , cvar_var        , dpvar  ,                   &
-   xcpp   , rvoid  )
+  do iel = 1, ncel
+    vark(iel) = cvar_var(iel)
+  enddo
+endif
+
+print*,"cvar_var,cvara_var, vark",cvar_var(50),cvara_var(50), vark(50),"before codits"
+if (iter_sca .eq. 1) then
+  call codits &
+  !==========
+   ( idtvar , ivarfl(ivar)    , iconvp , idiffp , ndircp ,          &
+     imrgra , nswrsp , nswrgp , imligp , ircflp ,                   &
+     ischcp , isstpp , iescap , imucpp , idftnp , iswdyp ,          &
+     iwarnp ,                                                       &
+     blencp , epsilp , epsrsp , epsrgp , climgp , extrap ,          &
+     relaxp , thetv  ,                                              &
+     cvara_var       , cvara_var       ,                            &
+     coefap , coefbp , cofafp , cofbfp ,                            &
+     imasfl , bmasfl ,                                              &
+     viscf  , viscb  , viscf  , viscb  , viscce ,                   &
+     weighf , weighb ,                                              &
+     icvflb , ivoid  ,                                              &
+     rovsdt , smbrs  , cvar_var        , dpvar  ,                   &
+     xcpp   , rvoid  )
+else
+     call codits &
+  !==========
+   ( idtvar , ivarfl(ivar)    , iconvp , idiffp , ndircp ,          &
+     imrgra , nswrsp , nswrgp , imligp , ircflp ,                   &
+     ischcp , isstpp , iescap , imucpp , idftnp , iswdyp ,          &
+     iwarnp ,                                                       &
+     blencp , epsilp , epsrsp , epsrgp , climgp , extrap ,          &
+     relaxp , thetv  ,                                              &
+     cvara_var       , vark       ,                            &
+     coefap , coefbp , cofafp , cofbfp ,                            &
+     imasfl , bmasfl ,                                              &
+     viscf  , viscb  , viscf  , viscb  , viscce ,                   &
+     weighf , weighb ,                                              &
+     icvflb , ivoid  ,                                              &
+     rovsdt , smbrs  , cvar_var        , dpvar  ,                   &
+     xcpp   , rvoid  )
+endif
+print*,"cvar_var,cvara_var,vark",cvar_var(50),cvara_var(50),vark(50),"after codits"
+
+
+ xvarmu0 = 0.d0
+ do iel=1, ncel
+   xvarmu0 = xvarmu0 + (cvara_var(iel)**2)*cell_f_vol(iel)
+ enddo
+
+
+if (nterup.gt.1) then
+
+  icvrge = 1
+
+  xvartmp = 0.d0
+  do iel = 1,ncel
+    xdvar = cvar_var(iel) - vark(iel)
+    xvartmp = xvartmp +(xdvar**2) * cell_f_vol(iel)
+  enddo
+  xvarmu = sqrt(xvartmp)
+  if (xvarmu.ge.epsup*xvarmu0) icvrge = 0
+
+endif
+
 
 !===============================================================================
 ! 4. Writing and clipping
@@ -1237,78 +649,11 @@ call codits &
 
 call clpsca(iscal)
 
-! Treatment of precipitation for groundwater flow module.
-if (ippmod(idarcy).eq.1) then
-  if (sorption_scal%imxsol.ge.0) then
-    call field_get_key_id("gwf_precip_concentration_id", keypre)
-    call field_get_key_int(ivarfl(ivar), keypre, igwfpr)
-    call field_get_val_s(igwfpr, cpro_precip)
-    call field_get_val_s(sorption_scal%imxsol, cpro_mxsol)
 
-    ! Clipping of solute concentration, update of precipitation concentration
-    do iel = 1,ncel
-      ctot_tmp = cvar_var(iel) + cpro_precip(iel)
-      cvar_var(iel) = min(ctot_tmp, cpro_mxsol(iel))
-      cpro_precip(iel) = max(0.d0, ctot_tmp - cpro_mxsol(iel))
-    enddo
-  endif
-endif
 
-if (idilat.ge.4.and.itspdv.eq.1) then
-
-  do iel = 1, ncel
-    if (itytur.eq.2 .or. itytur.eq.5) then
-      xk = cvara_k(iel)
-      xe = cvara_ep(iel)
-    elseif (itytur.eq.3) then
-        if (irijco.eq.1) then
-          xk = 0.5d0*(cvara_rij(1,iel)+cvara_rij(2,iel)+cvara_rij(3,iel))
-          xe = cvara_ep(iel)
-        else
-          xk = 0.5d0*(cvara_r11(iel)+cvara_r22(iel)+cvara_r33(iel))
-          xe = cvara_ep(iel)
-        endif
-    elseif(iturb.eq.60) then
-      xk = cvara_k(iel)
-      xe = cmu*xk*cvara_omg(iel)
-    endif
-    rhovst = xcpp(iel)*crom(iel)*xe/(xk * rvarfl(iscal))       &
-           *cell_f_vol(iel)
-
-    cpro_tsscal(iel) = cpro_tsscal(iel) - rhovst*cvar_var(iel)
-
-  enddo
-
-endif
-
-! Store the implicit part of the radiative source term
-if (idilat.ge.4.and.iirayo.ge.1.and.iscal.eq.iscalt) then
-  call field_get_id("rad_st_implicit", f_id)
-  call field_get_val_s(f_id,cpro_tsri1)
-  do iel = 1, ncel
-    dvar = cvar_var(iel)-cvara_var(iel)
-    cpro_tsscal(iel) = cpro_tsscal(iel) &
-                     - cpro_tsri1(iel)*dvar*cell_f_vol(iel)
-  enddo
-endif
 
 ! BILAN EXPLICITE (VOIR CODITS : ON ENLEVE L'INCREMENT)
 ! Ceci devrait etre valable avec le theta schema sur les Termes source
-
-if (vcopt%iwarni.ge.2) then
-  if (vcopt%nswrsm.gt.1) then
-    ibcl = 1
-  else
-    ibcl = 0
-  endif
-  do iel = 1, ncel
-    smbrs(iel) = smbrs(iel)                                                 &
-            - vcopt%istat*xcpp(iel)*(pcrom(iel)/dt(iel))*cell_f_vol(iel)        &
-                *(cvar_var(iel)-cvara_var(iel))*ibcl
-  enddo
-  sclnor = sqrt(cs_gdot(ncel,smbrs,smbrs))
-  write(nfecra,1200)chaine(1:16) ,sclnor
-endif
 
 ! Free memory
 deallocate(w1)
