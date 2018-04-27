@@ -100,10 +100,7 @@ double precision, pointer, dimension(:)   :: dt
 double precision, pointer, dimension(:,:) :: frcxt => null()
 double precision, dimension(:,:), pointer :: c_st_vel,c_st_vela
 ! Local variables
-integer          init, inc, itypfl
-integer          nswrgp, imligp, iwarnp
-integer          iflmb0
-double precision  epsrgp, climgp, extrap,xx,yy
+
 logical          must_return
 
 integer          iel   , ifac  , inod  , ivar  , iscal , iappel, n_fans
@@ -147,15 +144,15 @@ double precision, allocatable, dimension(:) :: hbord, theipb
 double precision, allocatable, dimension(:) :: visvdr
 double precision, allocatable, dimension(:) :: prdv2f
 double precision, allocatable, dimension(:) :: mass_source
-double precision, dimension(:), pointer :: brom, crom, crom_prev, crom_prev2,  cromksca, divu, brom0,crom0
+double precision, dimension(:), pointer :: brom, crom, crom_prev, crom_prev2
 
-double precision, pointer, dimension(:,:) :: uvwk, vel0
+double precision, pointer, dimension(:,:) :: uvwk
 double precision, pointer, dimension(:,:) :: trava
 double precision, pointer, dimension(:,:,:) :: ximpav
 double precision, dimension(:,:), pointer :: disale
 double precision, dimension(:,:), pointer :: vel
 double precision, dimension(:,:), pointer :: cvar_vec
-double precision, dimension(:), pointer :: cvar_sca,cvar_scalar
+double precision, dimension(:), pointer :: cvar_sca
 double precision, dimension(:), pointer :: cvar_pr, cvara_pr
 double precision, dimension(:), pointer :: cvar_k, cvara_k, cvar_ep, cvara_ep
 double precision, dimension(:), pointer :: cvar_omg, cvara_omg
@@ -173,8 +170,7 @@ double precision, dimension(:), pointer :: cproa_sat, cproa_scal_st_, cproa_scal
 double precision, dimension(:), pointer :: i_mass_flux, b_mass_flux
 
 double precision, dimension(:), pointer :: coefap, cofafp, cofbfp
-double precision, dimension(:,:), pointer :: coefau, cofafu
-double precision, dimension(:,:,:), pointer :: coefbu, cofbfu
+
 type(gwf_soilwater_partition) :: sorption_scal
 
 type(var_cal_opt) :: vcopt, vcopt_u, vcopt_p
@@ -221,23 +217,7 @@ interface
 
   end subroutine richards
 
-  function phi(f_id, x, y, t) result(phi_) &
-    bind(C, name='phi')
-    use, intrinsic :: iso_c_binding
-    implicit none
-    integer(kind=c_int), value :: f_id
-    real(kind=c_double), value :: x, y, t
-    real(kind=c_double) :: phi_
-  end function phi
-
 end interface
-
-!===============================================================================
-! Interfaces
-!===============================================================================
-
-
-
 
 
 !===============================================================================
@@ -254,7 +234,7 @@ call field_get_key_struct_var_cal_opt(ivarfl(ipr), vcopt_p)
 !===============================================================================
 ! 1.  INITIALISATION
 !===============================================================================
-allocate(cromksca(ncel),divu(ncel))
+
 allocate(isostd(nfabor+1))
 allocate(c_st_vela(3,ncel))
 allocate(cproa_scal_st_(ncel))
@@ -904,18 +884,14 @@ if (ippmod(idarcy).eq.1) then
 endif
 print*,"==================================itrale ", itrale, "================================"
 
-if (nscal.gt.0) then 
+if (isno2t.gt.0) then 
   call field_get_key_int(ivarfl(isca(1)), kstprv, f_id)
-  if(f_id.gt.0) then
-    call field_get_val_s(f_id, cproa_scal_st)
-    do iel = 1, ncel
-        cproa_scal_st_(iel) = cproa_scal_st(iel)
-    enddo 
-  print*,"cproa_scal_st before boucle",cproa_scal_st(50)
-  endif
 
+  call field_get_val_s(f_id, cproa_scal_st)
+  do iel = 1, ncel
+      cproa_scal_st_(iel) = cproa_scal_st(iel)
+  enddo 
 endif
-
 do while (iterns.le.nterup)
 
   call precli(nvar, icodcl, rcodcl)
@@ -1350,10 +1326,7 @@ do while (iterns.le.nterup)
   endif
 
 !===============================================================================
-  call field_get_key_int(ivarfl(iu), kimasf, iflmas)
-  call field_get_key_int(ivarfl(iu), kbmasf, iflmab)
-  call field_get_val_s(iflmas, i_mass_flux)
-  call field_get_val_s(iflmab, b_mass_flux)
+
 
 print*,"===============================interns= ================================",iterns
 !========================================================================
@@ -1365,21 +1338,32 @@ print*,"===============================part 1 ==================================
 !===============================================================================
 ! 15.  RESOLUTION DES SCALAIRES
 !===============================================================================
-
 	if (nscal.ge.1 .and. iirayo.gt.0) then
 
 		if (vcopt_u%iwarni.ge.1 .and. mod(ntcabs,nfreqr).eq.0) then
 		  write(nfecra,1070)
 		endif
-                print*,"COUCOU"
+
 		call cs_rad_transfer_solve(itypfb, nclacp, nclafu, &
 			                   dt, cp2fol, cp2ch, ichcor)
-  
 	endif
- 	call scalai                                                     & 
-      ( nvar   , nscal  ,                                         &
-       dt,iterns,icvrge     )
 
+	if (nscal.ge.1) then
+
+		if(vcopt_u%iwarni.ge.1) then
+		  write(nfecra,1060)
+		endif
+
+		call scalai                                                     &
+	       ( nvar   , nscal  ,                                              &
+		 dt     , iterns,icvrge)
+
+		! Diffusion terms for weakly compressible algorithm
+		if (idilat.ge.4) then
+		  call diffst(nscal)
+		endif
+
+	endif
 !===============================================================================
 ! 7.  CALCUL DES PROPRIETES PHYSIQUES VARIABLES
 !      SOIT VARIABLES AU COURS DU TEMPS
@@ -1387,28 +1371,16 @@ print*,"===============================part 1 ==================================
 !        (VISCOSITES ET MASSE VOLUMIQUE)
 !===============================================================================
 
-  if (vcopt_u%iwarni.ge.1) then
-    write(nfecra,1010)
-  endif
-  !if (nscal.ge.1) then
-  !  print*,"cvar_scalar, crom in tridim before corrected", cvar_scalar(50), crom(50)
-  !  do iel=1,ncel
-  !    cromksca(iel)=crom(iel)*cvar_scalar(iel)
-  !  enddo
-  !endif
+if (vcopt_u%iwarni.ge.1) then
+  write(nfecra,1010)
+endif
 
-  call phyvar(nvar, nscal, dt)
-  if (itrale.gt.0) then
-    iappel = 2
-    call schtmp(nscal, iappel)
-  endif
-  
- ! if (nscal.ge.1) then
- !   do iel=1,ncel
- !     cvar_scalar(iel)=cromksca(iel)/crom(iel)
- !   enddo
- !   print*,"cvar_scalar,crom in tridim after corrected", cvar_scalar(50),crom(50)
- ! endif
+call phyvar(nvar, nscal, dt)
+
+if (itrale.gt.0) then
+  iappel = 2
+  call schtmp(nscal, iappel)
+endif
 !===============================================================================
 ! 11. CALCUL A CHAMP DE VITESSE NON FIGE :
 !      ON RESOUT VITESSE ET TURBULENCE
@@ -1449,26 +1421,16 @@ print*,"===============================part 1 ==================================
       enddo
     endif
 
-    if (iterns .lt. nterup.and.nscal.gt.0.and.f_id .gt.0) then 
-      print*,"cproa_scal_st in boucle",cproa_scal_st(50)
+    if (iterns .lt. nterup.and.isno2t.gt.0) then
       do iel = 1, ncel
        cpro_scal_st(iel) = cproa_scal_st(iel)
        cproa_scal_st(iel) = cproa_scal_st_(iel)
       enddo 
     endif
-
     if ((istmpf.eq.0.and.inslst.eq.0) .or. istmpf.ne.0) then
         iappel = 3
         call schtmp(nscal, iappel)
-   endif
-       
-
-
-    print*,"i_mass_flux after schtmp3",i_mass_flux(50)   
-    call divmas(1,i_mass_flux,b_mass_flux,divu)
-    print*,"divu",divu(50)
-    print*,"crom,crom_prev", crom(50), crom_prev(50)
-    print*,"Res", divu(50)+(crom(50)-crom_prev(50))/dt(50)*cell_f_vol(50)
+     endif
     !     Si c'est la derniere iteration : INSLST = 1
     if ((icvrge.eq.1).or.(iterns.eq.nterup)) then
 
@@ -1504,26 +1466,11 @@ enddo
 
 
 100 continue
-
-if(f_id.gt.0 .and. nscal.gt.0) then
+if(isno2t.gt.0) then
   do iel = 1, ncel
     cproa_scal_st(iel) = cpro_scal_st(iel)
   enddo
 endif
-
-!if (nscal.ge.1) then
-   !call field_get_val_s(ivarfl(isca(1)), cvar_scalar)
-   !if(vcopt_u%iwarni.ge.1) then
-    ! write(nfecra,1060)
-     !endif
-   !print*,"cvar_scalar, crom in tridim before corrected", cvar_scalar(50), crom(50)
-   ! do iel=1,ncel
-   !   cromksca(iel)=crom(iel)*cvar_scalar(iel)
-   ! enddo
-
-  
-
-!endif
 ! DARCY : the hydraulic head, identified with the pressure,
 ! has been updated by the call to Richards.
 ! As diffusion of scalars depends on hydraulic head in the
@@ -1789,13 +1736,9 @@ endif  ! Fin si calcul sur champ de vitesse fige SUITE
 deallocate(icodcl, rcodcl)
 
 deallocate(isostd)
-deallocate(c_st_vela,divu)
+deallocate(c_st_vela)
 deallocate(cproa_scal_st_)
 deallocate(cpro_scal_st)
-deallocate(cromksca)
-!deallocate(vel0)
-!deallocate(crom0)
-!deallocate(brom0)
 !===============================================================================
 ! 16.  TRAITEMENT DU FLUX DE MASSE, DE LA VISCOSITE,
 !      DE LA MASSE VOLUMIQUE ET DE LA CHALEUR SPECIFIQUE POUR
